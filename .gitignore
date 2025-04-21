@@ -1,0 +1,32 @@
+# Environment variables
+.env
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Temporary files
+*.json
+!requirements.json
+
+# macOS specific files
+.DS_Store
+
+# IDE specific files
+.idea/
+.vscode/
+
+# Generated CSV files
+*.csv
+
+# Keep only the essential CSV files
+!example_output.csv
