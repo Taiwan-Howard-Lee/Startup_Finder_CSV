@@ -18,16 +18,9 @@ startup-finder/
 │   ├── processor/            # Core crawler and data processing
 │   └── utils/                # API clients and utility functions
 ├── tests/                    # Test files
-│   ├── crawler/              # Tests for crawler components
-│   ├── collector/            # Tests for collector components
-│   └── utils/                # Tests for utility components
-├── data/                     # Data files and output
-│   ├── *.csv                 # CSV output files
-│   └── *.json                # JSON data files
-├── docs/                     # Documentation
-│   ├── PROJECT_PLAN.md       # Project planning document
-│   └── README.md             # Copy of this README
-├── maintenance/              # Maintenance scripts
+│   ├── test_enhanced_crawler.py  # Tests for enhanced crawler
+│   ├── test_uk_startups.py       # Tests for UK startup discovery
+│   └── ...                       # Other test files
 ├── generate_startup_csv.py   # Main script to generate CSV output
 ├── run_tests.py              # Script to run all tests
 ├── setup_env.py              # Environment setup and API key validation
@@ -97,22 +90,11 @@ python run_tests.py
 python run_tests.py test_enhanced_crawler
 ```
 
-The test suite is organized into subdirectories:
-
-- **tests/crawler/**: Tests for crawler components
-  - Enhanced crawler with Jina-inspired techniques
-  - Parallel processing
-  - URL normalization and adaptive crawling
-  - Startup discovery and data enrichment
-  - LinkedIn and company website data collection
-
-- **tests/collector/**: Tests for collector components
-  - Query expansion
-  - AutoScraper functionality
-
-- **tests/utils/**: Tests for utility components
-  - API key handling
-  - LLM-based filtering
+The test suite includes:
+- Tests for the crawler with Jina-inspired techniques
+- Tests for parallel processing
+- Tests for URL normalization and adaptive crawling
+- Tests for startup discovery and data enrichment
 
 ## Dependencies
 

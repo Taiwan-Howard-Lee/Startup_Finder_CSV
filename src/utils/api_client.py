@@ -7,7 +7,7 @@ startup intelligence gathering.
 
 import os
 import json
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Any
 
 import google.generativeai as genai
 
@@ -69,13 +69,13 @@ class GeminiAPIClient:
         self.flash_model = genai.GenerativeModel('gemini-2.5-flash-preview-04-17')  # For quick responses
         self.pro_model = genai.GenerativeModel('gemini-2.5-pro-preview-03-25')      # For deep thinking
 
-    def expand_query(self, query: str, num_expansions: int = 3) -> List[str]:
+    def expand_query(self, query: str, num_expansions: int = 5) -> List[str]:
         """
         Expand a search query into multiple variations using Gemini AI.
 
         Args:
             query: The original search query.
-            num_expansions: Number of query variations to generate.
+            num_expansions: Number of query variations to generate (max 5 per call).
 
         Returns:
             A list of expanded query strings.
@@ -83,10 +83,14 @@ class GeminiAPIClient:
         Raises:
             Exception: If there's an error communicating with the Gemini API.
         """
+        # Limit to 5 expansions per call to ensure quality and reliability
+        actual_expansions = min(5, num_expansions)
+
         prompt = f"""
         You are a startup intelligence researcher. Expand the following search query
-        into {num_expansions} different variations to find startups matching this criteria.
+        into {actual_expansions} different variations to find startups matching this criteria.
         Make each variation unique but semantically similar to the original query.
+        Focus on variations that would help discover different startups in this space.
 
         Original query: "{query}"
 
@@ -209,3 +213,68 @@ class GeminiAPIClient:
                 "confidence": 0.0,
                 "last_updated": "2024-04-01"  # Placeholder
             }
+
+    def extract_structured_data(self, company_name: str, source_type: str, content: str, fields: List[str]) -> Dict[str, Any]:
+        """
+        Extract structured data from HTML or text content using Gemini AI.
+
+        Args:
+            company_name: Name of the company.
+            source_type: Type of source (e.g., "LinkedIn", "Website", "Crunchbase").
+            content: HTML or text content to analyze.
+            fields: List of fields to extract (e.g., "Location", "Founded Year", "Industry").
+
+        Returns:
+            Dictionary with extracted fields.
+        """
+        # Truncate content if it's too long (Gemini has token limits)
+        max_content_length = 15000  # Adjust based on model limits
+        if len(content) > max_content_length:
+            content = content[:max_content_length] + "..."
+
+        # Create a prompt for Gemini
+        fields_str = ", ".join(fields)
+        prompt = f"""
+        You are a startup intelligence data extractor. Extract the following information about
+        {company_name} from this {source_type} content: {fields_str}.
+
+        Content:
+        {content}
+
+        For each field, provide the most accurate information available in the content.
+        If information for a field is not available, respond with null.
+
+        Format your response as a JSON object with the requested fields as keys.
+        Be precise and extract only factual information present in the content.
+        """
+
+        try:
+            # Use the flash model for simpler extraction tasks
+            response = self.flash_model.generate_content(prompt)
+
+            # Try to parse the response as JSON
+            try:
+                # Extract JSON from the response
+                response_text = response.text.strip()
+
+                # If the response is wrapped in ```json and ```, extract just the JSON part
+                if response_text.startswith("```json") and response_text.endswith("```"):
+                    response_text = response_text[7:-3].strip()
+                elif response_text.startswith("```") and response_text.endswith("```"):
+                    response_text = response_text[3:-3].strip()
+
+                parsed_data = json.loads(response_text)
+
+                # Filter out null values
+                filtered_data = {k: v for k, v in parsed_data.items() if v is not None and v != "null" and v != "Not available"}
+
+                return filtered_data
+
+            except json.JSONDecodeError:
+                # If we can't parse as JSON, try to extract structured data manually
+                print(f"Error parsing JSON from Gemini response for {company_name} {source_type}")
+                return {}
+
+        except Exception as e:
+            print(f"Error extracting data from {source_type} for {company_name}: {e}")
+            return {}

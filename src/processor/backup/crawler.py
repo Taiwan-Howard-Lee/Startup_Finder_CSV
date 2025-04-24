@@ -22,8 +22,6 @@ import requests
 import urllib3
 from bs4 import BeautifulSoup
 from urllib.robotparser import RobotFileParser
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 # Import our data extractors
 from src.processor.linkedin_extractor import LinkedInExtractor
@@ -38,11 +36,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# These will be defined later in the file
-AutoScraperDataSource = None
-Crawler = None
-MockDataSource = None
 
 
 class URLNormalizer:
@@ -497,14 +490,13 @@ class ContentExtractionStrategy:
     Base class for content extraction strategies.
     """
 
-    def extract_content(self, url: str, headers: Dict[str, str], session: Optional[requests.Session] = None) -> Tuple[Optional[str], Optional[BeautifulSoup]]:
+    def extract_content(self, url: str, headers: Dict[str, str]) -> Tuple[Optional[str], Optional[BeautifulSoup]]:
         """
         Extract content from a URL.
 
         Args:
             url: URL to extract content from.
             headers: HTTP headers to use.
-            session: Optional requests.Session to use for connection pooling.
 
         Returns:
             Tuple of (raw_html, parsed_html) or (None, None) if extraction failed.
@@ -517,27 +509,24 @@ class SimpleRequestStrategy(ContentExtractionStrategy):
     Simple content extraction strategy using requests.
     """
 
-    def extract_content(self, url: str, headers: Dict[str, str], session: Optional[requests.Session] = None) -> Tuple[Optional[str], Optional[BeautifulSoup]]:
+    def extract_content(self, url: str, headers: Dict[str, str]) -> Tuple[Optional[str], Optional[BeautifulSoup]]:
         """
         Extract content from a URL using simple requests.
 
         Args:
             url: URL to extract content from.
             headers: HTTP headers to use.
-            session: Optional requests.Session to use for connection pooling.
 
         Returns:
             Tuple of (raw_html, parsed_html) or (None, None) if extraction failed.
         """
         try:
-            # Use the provided session or create a new one
-            req_session = session or requests.Session()
-
             # Make the request with a session to handle cookies
-            response = req_session.get(
+            session = requests.Session()
+            response = session.get(
                 url,
                 headers=headers,
-                timeout=10,  # Reduced timeout for faster processing
+                timeout=15,
                 allow_redirects=True,
                 verify=False  # Disable SSL verification to avoid certificate issues
             )
@@ -557,14 +546,13 @@ class AjaxRequestStrategy(ContentExtractionStrategy):
     Content extraction strategy for AJAX-heavy websites.
     """
 
-    def extract_content(self, url: str, headers: Dict[str, str], session: Optional[requests.Session] = None) -> Tuple[Optional[str], Optional[BeautifulSoup]]:
+    def extract_content(self, url: str, headers: Dict[str, str]) -> Tuple[Optional[str], Optional[BeautifulSoup]]:
         """
         Extract content from an AJAX-heavy website.
 
         Args:
             url: URL to extract content from.
             headers: HTTP headers to use.
-            session: Optional requests.Session to use for connection pooling.
 
         Returns:
             Tuple of (raw_html, parsed_html) or (None, None) if extraction failed.
@@ -578,14 +566,12 @@ class AjaxRequestStrategy(ContentExtractionStrategy):
                 "Referer": url
             })
 
-            # Use the provided session or create a new one
-            req_session = session or requests.Session()
-
             # Make the request with a session to handle cookies
-            response = req_session.get(
+            session = requests.Session()
+            response = session.get(
                 url,
                 headers=ajax_headers,
-                timeout=15,  # Reduced timeout for faster processing (from 20)
+                timeout=20,  # Longer timeout for AJAX sites
                 allow_redirects=True,
                 verify=False
             )
@@ -605,14 +591,13 @@ class MobileUserAgentStrategy(ContentExtractionStrategy):
     Content extraction strategy using a mobile user agent.
     """
 
-    def extract_content(self, url: str, headers: Dict[str, str], session: Optional[requests.Session] = None) -> Tuple[Optional[str], Optional[BeautifulSoup]]:
+    def extract_content(self, url: str, headers: Dict[str, str]) -> Tuple[Optional[str], Optional[BeautifulSoup]]:
         """
         Extract content from a URL using a mobile user agent.
 
         Args:
             url: URL to extract content from.
             headers: HTTP headers to use.
-            session: Optional requests.Session to use for connection pooling.
 
         Returns:
             Tuple of (raw_html, parsed_html) or (None, None) if extraction failed.
@@ -622,14 +607,12 @@ class MobileUserAgentStrategy(ContentExtractionStrategy):
             mobile_headers = headers.copy()
             mobile_headers["User-Agent"] = "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1"
 
-            # Use the provided session or create a new one
-            req_session = session or requests.Session()
-
             # Make the request with a session to handle cookies
-            response = req_session.get(
+            session = requests.Session()
+            response = session.get(
                 url,
                 headers=mobile_headers,
-                timeout=10,  # Reduced timeout for faster processing
+                timeout=15,
                 allow_redirects=True,
                 verify=False
             )
@@ -663,35 +646,15 @@ class WebCrawler:
             "User-Agent": self.user_agent
         }
 
-        # Rate limiting parameters - optimized for speed
-        self.request_delay = 0.2  # seconds between requests (reduced from 1.0)
+        # Rate limiting parameters
+        self.request_delay = 1.0  # seconds between requests
         self.last_request_time = 0
         self.domain_last_request = {}  # Track last request time per domain
-        self.domain_delay = 0.5  # seconds between requests to the same domain (reduced from 2.0)
+        self.domain_delay = 2.0  # seconds between requests to the same domain
 
-        # Retry parameters - optimized for speed
+        # Retry parameters
         self.max_retries = max_retries
-        self.retry_delay = 1.0  # seconds between retries (reduced from 2.0)
-
-        # Set up connection pooling for better performance
-        self.session = requests.Session()
-
-        # Configure retry strategy
-        retry_strategy = Retry(
-            total=max_retries,
-            backoff_factor=0.1,  # Faster backoff
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET", "HEAD"]
-        )
-
-        # Mount the adapter with our retry strategy for both http and https
-        adapter = HTTPAdapter(
-            max_retries=retry_strategy,
-            pool_connections=max_workers * 2,  # Double the number of workers
-            pool_maxsize=max_workers * 4       # Quadruple the number of workers
-        )
-        self.session.mount("http://", adapter)
-        self.session.mount("https://", adapter)
+        self.retry_delay = 2.0  # seconds between retries
 
         # Parallel processing
         self.max_workers = max_workers
@@ -803,7 +766,7 @@ class WebCrawler:
 
     def fetch_webpage(self, url: str, retry_count: int = 0) -> Tuple[Optional[str], Optional[BeautifulSoup]]:
         """
-        Fetch a webpage and return its content using a single optimized strategy.
+        Fetch a webpage and return its content using adaptive crawling techniques.
 
         Args:
             url: URL of the webpage to fetch.
@@ -814,49 +777,60 @@ class WebCrawler:
         """
         # Normalize the URL to avoid duplicates
         normalized_url = URLNormalizer.normalize(url)
+        url_fingerprint = URLNormalizer.get_url_fingerprint(normalized_url)
 
-        # Don't skip URLs during discovery phase
-        # We want to process all URLs even if they've been seen before
+        # Check if we've already seen this URL
+        if url_fingerprint in self.url_fingerprints:
+            logger.info(f"Skipping duplicate URL: {url}")
+            return None, None
+
+        # Add to seen URLs
+        self.url_fingerprints.add(url_fingerprint)
 
         # Check cache first
         if normalized_url in self.cache:
             return self.cache[normalized_url]
 
-        # Check robots.txt - but don't retry or spend time on errors
-        try:
-            if not self.robots_checker.can_fetch(url):
-                logger.warning(f"Robots.txt disallows fetching {url}")
-                return None, None
-        except Exception as e:
-            # Just log and continue if there's an error with robots.txt
-            logger.warning(f"Error checking robots.txt for {url}: {e}")
+        # Check robots.txt
+        if not self.robots_checker.can_fetch(url):
+            logger.warning(f"Robots.txt disallows fetching {url}")
+            return None, None
 
-        # Respect rate limits - simplified
+        # Detect website type for adaptive crawling
+        website_type = self._detect_website_type(url)
+        logger.debug(f"Detected website type for {url}: {website_type}")
+
+        # Choose extraction strategies
+        strategies = self._choose_extraction_strategy(url, website_type)
+
+        # Respect rate limits
         self._respect_rate_limits(url)
 
-        # Use only a single fast request with a short timeout
-        try:
-            # Use our optimized session with connection pooling
-            response = self.session.get(
-                url,
-                headers=self.headers,
-                timeout=5,  # Short timeout to avoid long waits
-                allow_redirects=True,
-                verify=False  # Disable SSL verification to avoid certificate issues
-            )
-            response.raise_for_status()
+        # Add a small random delay to avoid detection
+        time.sleep(random.uniform(0.1, 0.5))
 
-            # Parse the HTML
-            soup = BeautifulSoup(response.text, "lxml")
+        # Try each strategy in order until one succeeds
+        for strategy in strategies:
+            try:
+                raw_html, soup = strategy.extract_content(url, self.headers)
+                if raw_html and soup:
+                    # Strategy succeeded, cache the result
+                    self.cache[normalized_url] = (raw_html, soup)
+                    return raw_html, soup
+            except Exception as e:
+                logger.warning(f"Strategy {strategy.__class__.__name__} failed for {url}: {e}")
+                continue
 
-            # Cache the result
-            self.cache[normalized_url] = (response.text, soup)
-            return response.text, soup
+        # All strategies failed, try to recover with retries
+        if retry_count < self.max_retries:
+            # Retry after delay with exponential backoff
+            retry_delay = self.retry_delay * (2 ** retry_count)  # Exponential backoff
+            logger.warning(f"All extraction strategies failed for {url}, retrying ({retry_count+1}/{self.max_retries}) after {retry_delay:.2f}s")
+            time.sleep(retry_delay)
+            return self.fetch_webpage(url, retry_count + 1)
 
-        except Exception as e:
-            # If the request fails, log the error and return None immediately
-            logger.error(f"Failed to fetch {url}: {e}")
-            return None, None
+        logger.error(f"Failed to fetch {url} after {self.max_retries} retries")
+        return None, None
 
     def fetch_webpages_parallel(self, urls: List[str]) -> Dict[str, Tuple[Optional[str], Optional[BeautifulSoup]]]:
         """
@@ -876,10 +850,16 @@ class WebCrawler:
             normalized_url = URLNormalizer.normalize(url)
             url_fingerprint = URLNormalizer.get_url_fingerprint(normalized_url)
 
-            # Don't skip URLs during discovery phase
-            # We want to process all URLs even if they've been seen before
+            # Skip if we've already seen this URL
+            if url_fingerprint in self.url_fingerprints:
+                logger.info(f"Skipping duplicate URL in parallel fetch: {url}")
+                continue
+
             normalized_urls.append(normalized_url)
             url_to_normalized[url] = normalized_url
+
+            # Add to seen URLs
+            self.url_fingerprints.add(url_fingerprint)
 
         # Check cache first for all URLs
         results = {}
@@ -973,7 +953,7 @@ class WebCrawler:
 
     def extract_startup_names_with_patterns(self, content: str) -> List[str]:
         """
-        Extract startup names from content using more flexible patterns.
+        Extract startup names from content using regex patterns.
 
         Args:
             content: Text content to extract names from.
@@ -983,31 +963,20 @@ class WebCrawler:
         """
         potential_names = []
 
-        # More flexible patterns for company names
-        # Look for capitalized words or phrases that might be company names
-        company_patterns = [
-            # Company name followed by description
-            r'([A-Z][a-zA-Z0-9\-\s]{2,30})(?:\s*[-–:]\s*|\s*is\s+a\s+|\s*,\s+a\s+)([^\.]+(?:startup|company|technology|solution|platform))',
-            # Company name with founding year
-            r'([A-Z][a-zA-Z0-9\-\s]{2,30})(?:\s+was\s+founded\s+in\s+\d{4})',
-            # Company name with location
-            r'([A-Z][a-zA-Z0-9\-\s]{2,30})(?:\s+is\s+based\s+in\s+)',
-            # Company name with product
-            r'([A-Z][a-zA-Z0-9\-\s]{2,30})(?:\s+has\s+developed\s+)'
-        ]
+        # Pattern 1: Names with domain extensions
+        domain_pattern = r"([A-Z][A-Za-z0-9]+\.[a-z]{2,})\b"
+        domain_matches = re.findall(domain_pattern, content)
+        potential_names.extend(domain_matches)
 
-        for pattern in company_patterns:
-            matches = re.findall(pattern, content)
-            if matches:
-                for match in matches:
-                    # The first group contains the company name
-                    if isinstance(match, tuple):
-                        company_name = match[0].strip()
-                    else:
-                        company_name = match.strip()
+        # Pattern 2: Names ending with AI, Labs, Technologies, etc.
+        suffix_pattern = r"([A-Z][A-Za-z0-9]+\s+(?:AI|Labs|Technologies|Tech|Systems|Solutions))\b"
+        suffix_matches = re.findall(suffix_pattern, content)
+        potential_names.extend(suffix_matches)
 
-                    if company_name and len(company_name) > 2:
-                        potential_names.append(company_name)
+        # Pattern 3: CamelCase names (common for startups)
+        camelcase_pattern = r"\b([A-Z][a-z]+[A-Z][A-Za-z]*)\b"
+        camelcase_matches = re.findall(camelcase_pattern, content)
+        potential_names.extend(camelcase_matches)
 
         return potential_names
 
@@ -1028,36 +997,15 @@ class WebCrawler:
         for item in list_items:
             text = item.get_text().strip()
 
-            # Check if the list item starts with a potential company name
-            if text and text[0].isupper():
-                # Extract the first part that might be a company name
-                potential_name = text.split(':')[0].split(' - ')[0].split(',')[0].strip()
-                if len(potential_name) > 2 and potential_name not in potential_names:
-                    potential_names.append(potential_name)
+            # Look for CamelCase words that might be startup names
+            matches = re.findall(r'\b([A-Z][a-z]+[A-Z][A-Za-z]*)\b', text)
+            if matches:
+                potential_names.extend(matches)
 
-            # Also look for company names in the middle of list items
-            # Common patterns in lists of startups
-            list_patterns = [
-                r'([A-Z][a-zA-Z0-9\-\s]{2,30})(?:\s*[-–:]\s*|\s*is\s+a\s+|\s*,\s+a\s+)',
-                r'([A-Z][a-zA-Z0-9\-\s]{2,30})(?:\s+was\s+founded)',
-                r'([A-Z][a-zA-Z0-9\-\s]{2,30})(?:\s+is\s+based)'
-            ]
-
-            for pattern in list_patterns:
-                matches = re.findall(pattern, text)
-                if matches:
-                    for match in matches:
-                        company_name = match.strip()
-                        if company_name and len(company_name) > 2 and company_name not in potential_names:
-                            potential_names.append(company_name)
-
-        # Also check for names in headings (often used for company listings)
-        headings = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
-        for heading in headings:
-            text = heading.get_text().strip()
-            # If the heading is short and starts with a capital letter, it might be a company name
-            if 2 < len(text) < 30 and text[0].isupper() and text not in potential_names:
-                potential_names.append(text)
+            # Look for names with domain extensions
+            domain_matches = re.findall(r"([A-Z][A-Za-z0-9]+\.[a-z]{2,})\b", text)
+            if domain_matches:
+                potential_names.extend(domain_matches)
 
         return potential_names
 
@@ -1404,32 +1352,14 @@ class StartupCrawler:
 
         logger.info(f"Enriching data for: {name}")
 
-        # Import the extractors
-        try:
-            from src.processor.website_extractor import WebsiteExtractor
-            from src.processor.linkedin_extractor import LinkedInExtractor
-            from src.processor.crunchbase_extractor import CrunchbaseExtractor
-        except ImportError as e:
-            logger.error(f"Error importing extractors: {e}")
-            return startup_info
-
         # Create a specific query for this startup
         specific_query = f"\"{name}\" startup company information"
 
-        # Also create a query for the official website
-        website_query = f"{name} official website"
-
-        # And a query for LinkedIn
-        linkedin_query = f"site:linkedin.com/company/ \"{name}\""
-
-        # And a query for Crunchbase
-        crunchbase_query = f"site:crunchbase.com \"{name}\" company"
+        # Search for specific information about this startup
+        search_results = self.google_search.search(specific_query, max_results=max_results_per_startup)
 
         # Start with the basic info we already have
         merged_data = startup_info.copy()
-
-        # Search for specific information about this startup
-        search_results = self.google_search.search(specific_query, max_results=max_results_per_startup)
 
         # Prepare URLs for parallel fetching
         urls_to_fetch = []
@@ -1558,43 +1488,3 @@ class StartupCrawler:
 
         logger.info(f"Search complete. Found {len(final_results)} startups.")
         return final_results
-
-
-# Define backward compatibility classes
-
-# Import mock AutoScraperDataSource for backward compatibility
-try:
-    from src.processor.autoscraper_mock import AutoScraperDataSource
-except ImportError:
-    # Define a minimal AutoScraperDataSource if the import fails
-    class AutoScraperDataSource:
-        """Minimal mock implementation of AutoScraperDataSource."""
-
-        def __init__(self, model_path=None):
-            self.is_trained = False
-
-        def train_scraper(self, url, data):
-            return True
-
-        def extract_startup_data(self, url):
-            return {"Company Name": "MockStartup", "Website": url}
-
-        def save_model(self, model_path):
-            return True
-
-        def load_model(self, model_path):
-            return True
-
-# Alias for backward compatibility
-Crawler = StartupCrawler
-
-# Mock data source for backward compatibility
-class MockDataSource(DataSource):
-    """Mock data source for testing."""
-
-    def search(self, query, max_results=10):
-        """Return mock search results."""
-        return [
-            {"title": "Mock Result 1", "url": "https://example.com/1", "snippet": "This is a mock result."},
-            {"title": "Mock Result 2", "url": "https://example.com/2", "snippet": "This is another mock result."}
-        ][:max_results]
