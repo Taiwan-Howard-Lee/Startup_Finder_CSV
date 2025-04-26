@@ -42,22 +42,41 @@ class QueryExpander:
 
         Args:
             query: The original search query.
-            num_expansions: Number of query variations to generate.
+            num_expansions: Number of query variations to generate (1-100).
 
         Returns:
             A list of expanded query strings, including the original.
         """
+        # Validate input range
+        num_expansions = max(1, min(100, num_expansions))
+
         # Always include the original query
         expanded_queries = [query]
 
+        # If only 1 expansion requested, just return the original query
+        if num_expansions <= 1:
+            return expanded_queries
+
         try:
+            print(f"Generating {num_expansions} query variations using Gemini AI...")
+
             # For large numbers of expansions, make multiple calls with smaller batches
             # to avoid overwhelming the API
             remaining_expansions = num_expansions
             batch_size = 5  # Process in batches of 5 for better reliability
 
-            while remaining_expansions > 0:
+            # For very large expansion requests, use a larger batch size for the first few batches
+            if num_expansions > 50:
+                print(f"Large number of expansions requested ({num_expansions}). This may take a moment...")
+
+            attempt = 0
+            max_attempts = 20  # Limit the number of attempts to avoid infinite loops
+
+            while remaining_expansions > 0 and attempt < max_attempts:
+                attempt += 1
                 current_batch = min(batch_size, remaining_expansions)
+
+                print(f"Batch {attempt}: Requesting {current_batch} variations...")
 
                 # Get additional variations from Gemini
                 ai_expansions = self.api_client.expand_query(
@@ -65,20 +84,81 @@ class QueryExpander:
                     num_expansions=current_batch
                 )
 
+                # Count new unique expansions
+                new_expansions = 0
+
                 # Add unique expansions
                 for expansion in ai_expansions:
-                    if expansion not in expanded_queries:
+                    if expansion and expansion not in expanded_queries:
                         expanded_queries.append(expansion)
+                        new_expansions += 1
 
-                # Update remaining count based on actual new expansions added
-                remaining_expansions -= len(ai_expansions)
+                print(f"Added {new_expansions} unique variations")
 
-                # If we didn't get any new expansions, break to avoid infinite loop
-                if not ai_expansions:
+                # Update remaining count
+                remaining_expansions -= new_expansions
+
+                # If we didn't get any new expansions, try a slightly different approach
+                if new_expansions == 0:
+                    # If we're stuck, try a different prompt by adding some context
+                    if attempt % 3 == 0:
+                        print("Trying a different approach to generate more unique variations...")
+                        # Use a more specific prompt through the API client
+                        context_expansions = self.api_client.expand_query(
+                            query=f"alternative ways to search for {query}",
+                            num_expansions=current_batch
+                        )
+
+                        # Add unique expansions
+                        for expansion in context_expansions:
+                            if expansion and expansion not in expanded_queries:
+                                expanded_queries.append(expansion)
+                                remaining_expansions -= 1
+
+                    # If we're still stuck after multiple attempts, break to avoid wasting API calls
+                    if attempt > 10:
+                        print("Reached maximum attempts. Using the variations collected so far.")
+                        break
+
+                # If we've collected enough variations, break
+                if len(expanded_queries) >= num_expansions + 1:  # +1 for original
                     break
 
             # Ensure we don't exceed the requested number
             expanded_queries = expanded_queries[:num_expansions + 1]  # +1 for original
+
+            print(f"Generated {len(expanded_queries)-1} unique query variations")
+
+            # If we couldn't generate enough variations, fill with modified versions of the original
+            if len(expanded_queries) < num_expansions + 1:
+                print(f"Could only generate {len(expanded_queries)-1} unique variations. Adding modified versions of existing queries.")
+
+                # Create modified versions by adding common prefixes/suffixes
+                prefixes = ["latest ", "top ", "best ", "innovative ", "new "]
+                suffixes = [" companies", " startups", " businesses", " ventures", " enterprises"]
+
+                # Add variations until we reach the requested number
+                existing_variations = expanded_queries.copy()
+                for variation in existing_variations:
+                    if len(expanded_queries) >= num_expansions + 1:
+                        break
+
+                    for prefix in prefixes:
+                        modified = f"{prefix}{variation}"
+                        if modified not in expanded_queries:
+                            expanded_queries.append(modified)
+                            if len(expanded_queries) >= num_expansions + 1:
+                                break
+
+                    if len(expanded_queries) >= num_expansions + 1:
+                        break
+
+                    for suffix in suffixes:
+                        modified = f"{variation}{suffix}"
+                        if modified not in expanded_queries:
+                            expanded_queries.append(modified)
+                            if len(expanded_queries) >= num_expansions + 1:
+                                break
 
         except Exception as e:
             # Log the error but continue with just the original query

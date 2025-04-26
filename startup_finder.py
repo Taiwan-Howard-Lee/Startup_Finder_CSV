@@ -278,6 +278,119 @@ def batch_enrich_startups(crawler: EnhancedStartupCrawler, startup_info_list: Li
     return enriched_results
 
 
+def validate_and_correct_data_with_gemini(enriched_data: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+    """
+    Use Gemini 2.5 Pro to validate and correct the startup data before CSV generation.
+
+    Args:
+        enriched_data: List of enriched startup dictionaries.
+        query: Original search query to provide context.
+
+    Returns:
+        List of validated and corrected startup data dictionaries.
+    """
+    print("\n" + "=" * 80)
+    print("PHASE 3: DATA VALIDATION WITH GEMINI 2.5 PRO")
+    print("=" * 80)
+    print("Validating and correcting data with Gemini 2.5 Pro...")
+
+    try:
+        # Initialize the Gemini Pro model
+        gemini_client = GeminiAPIClient()
+        pro_model = gemini_client.pro_model
+
+        # Define the fields we want to validate
+        fields = [
+            "Company Name",
+            "Website",
+            "LinkedIn",
+            "Location",
+            "Founded Year",
+            "Industry",
+            "Company Size",
+            "Funding",
+            "Product Description",
+            "Products/Services",
+            "Team",
+            "Contact"
+        ]
+
+        # Process startups in batches to avoid overwhelming the API
+        batch_size = 5
+        validated_data = []
+
+        for i in range(0, len(enriched_data), batch_size):
+            batch = enriched_data[i:i+batch_size]
+            print(f"Validating batch {i//batch_size + 1}/{(len(enriched_data) + batch_size - 1)//batch_size}...")
+
+            # Convert batch to JSON for the prompt
+            import json
+            batch_json = json.dumps(batch, indent=2)
+
+            # Create a prompt for Gemini Pro
+            prompt = f"""
+            You are a data validation expert for startup company information. I have a dataset of startups related to the query: "{query}".
+
+            Please analyze the following startup data for anomalies, inconsistencies, or missing information, and provide a corrected version.
+
+            For each startup, check and correct the following:
+            1. Ensure company names are properly formatted and don't contain artifacts
+            2. Verify websites are valid and properly formatted (add https:// if missing)
+            3. Ensure LinkedIn URLs are valid
+            4. Format locations consistently
+            5. Ensure founded years are valid (4-digit years, not in the future)
+            6. Standardize industry names
+            7. Format company sizes consistently (e.g., "1-10 employees", "11-50 employees")
+            8. Format funding information consistently
+            9. Improve product descriptions if they're unclear or too short
+            10. Fill in missing information where possible based on other fields
+
+            Here's the data to validate and correct:
+            {batch_json}
+
+            Return ONLY the corrected data in valid JSON format, with the same structure as the input.
+            Do not include any explanations or notes outside the JSON structure.
+            """
+
+            # Get response from Gemini Pro
+            response = pro_model.generate_content(prompt)
+
+            # Extract the corrected data
+            try:
+                # Find JSON in the response
+                response_text = response.text
+
+                # Extract JSON content (assuming it's the entire response or contained within triple backticks)
+                if "```json" in response_text:
+                    json_content = response_text.split("```json")[1].split("```")[0].strip()
+                elif "```" in response_text:
+                    json_content = response_text.split("```")[1].strip()
+                else:
+                    json_content = response_text.strip()
+
+                # Parse the JSON
+                corrected_batch = json.loads(json_content)
+
+                # Add to validated data
+                validated_data.extend(corrected_batch)
+                print(f"Successfully validated and corrected {len(corrected_batch)} startups")
+
+            except Exception as e:
+                logger.error(f"Error parsing Gemini Pro response: {e}")
+                print(f"Error parsing Gemini Pro response. Using original data for this batch.")
+                # Fall back to original data for this batch
+                validated_data.extend(batch)
+
+        print(f"Data validation complete. Processed {len(validated_data)} startups.")
+        return validated_data
+
+    except Exception as e:
+        logger.error(f"Error validating data with Gemini Pro: {e}")
+        print(f"Error validating data with Gemini Pro: {e}")
+        print("Proceeding with original data.")
+        return enriched_data
+
+
 def generate_csv_from_startups(enriched_data: List[Dict[str, Any]], output_file: str, create_dir: bool = True):
     """
     Generate a CSV file from the enriched startup data.
@@ -466,12 +579,19 @@ def run_startup_finder(query: str, max_results: int = 5, num_expansions: int = 3
 
     print(f"\nPhase 2 completed in {phase2_time:.2f} seconds")
 
+    # Phase 3: Validate and correct data with Gemini 2.5 Pro
+    start_time = time.time()
+    validated_results = validate_and_correct_data_with_gemini(enriched_results, query)
+    phase3_time = time.time() - start_time
+
+    print(f"\nPhase 3 completed in {phase3_time:.2f} seconds")
+
     # Generate CSV file
     print("\n" + "=" * 80)
     print("GENERATING CSV FILE")
     print("=" * 80)
 
-    success = generate_csv_from_startups(enriched_results, output_file)
+    success = generate_csv_from_startups(validated_results, output_file)
 
     if success:
         # Summary
@@ -480,8 +600,12 @@ def run_startup_finder(query: str, max_results: int = 5, num_expansions: int = 3
         print("=" * 80)
         print(f"Original search query: {query}")
         print(f"Number of expanded queries: {len(expanded_queries)}")
-        print(f"Total time: {phase1_time + phase2_time:.2f} seconds")
+        print(f"Phase 1 (Discovery) time: {phase1_time:.2f} seconds")
+        print(f"Phase 2 (Enrichment) time: {phase2_time:.2f} seconds")
+        print(f"Phase 3 (Validation) time: {phase3_time:.2f} seconds")
+        print(f"Total time: {phase1_time + phase2_time + phase3_time:.2f} seconds")
         print(f"Startups found: {len(all_startup_info)}")
+        print(f"Startups validated: {len(validated_results)}")
         print(f"CSV file generated: {output_file}")
     else:
         print("\nFailed to generate CSV file.")
@@ -501,7 +625,7 @@ def parse_arguments():
     parser.add_argument("--max-results", "-m", type=int, default=10,
                         help="Maximum number of search results to process per query (default: 10)")
     parser.add_argument("--num-expansions", "-n", type=int, default=10,
-                        help="Number of query expansions to generate (default: 10)")
+                        help="Number of query expansions to generate (1-100, default: 10)")
     parser.add_argument("--output-file", "-o", type=str,
                         help="Path to the output CSV file (default: data/startups_TIMESTAMP.csv)")
     parser.add_argument("--no-expansion", action="store_true",
@@ -600,8 +724,8 @@ def interactive_mode():
     num_expansions = 10  # Default
     if not direct_startups and use_query_expansion:
         try:
-            num_expansions = int(input("\nNumber of query expansions (1-15, default: 10): ").strip() or "10")
-            num_expansions = max(1, min(15, num_expansions))  # Ensure between 1 and 15
+            num_expansions = int(input("\nNumber of query expansions (1-100, default: 10): ").strip() or "10")
+            num_expansions = max(1, min(100, num_expansions))  # Ensure between 1 and 100
         except ValueError:
             print("Invalid input. Using default value of 10.")
             num_expansions = 10

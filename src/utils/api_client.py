@@ -86,13 +86,23 @@ class GeminiAPIClient:
         # Limit to 5 expansions per call to ensure quality and reliability
         actual_expansions = min(5, num_expansions)
 
+        # Create a more detailed prompt for better variations
         prompt = f"""
-        You are a startup intelligence researcher. Expand the following search query
+        You are a startup intelligence researcher specializing in query expansion. Expand the following search query
         into {actual_expansions} different variations to find startups matching this criteria.
+
         Make each variation unique but semantically similar to the original query.
         Focus on variations that would help discover different startups in this space.
+        Consider different phrasings, synonyms, and industry-specific terminology.
 
         Original query: "{query}"
+
+        Guidelines for creating variations:
+        - Use different word orders and synonyms
+        - Consider industry-specific terminology
+        - Include variations with more specific or more general terms
+        - Think about different aspects of the query that could be emphasized
+        - Ensure each variation would return different but relevant results
 
         Return only the expanded queries as a numbered list, without any additional text.
         """
