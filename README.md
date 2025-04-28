@@ -1,21 +1,42 @@
 # Startup Intelligence Finder
 
-A tool that discovers and collects information about startups based on search queries, using Google Search and Gemini AI for intelligent filtering and data enrichment.
+A comprehensive tool that discovers, enriches, and validates information about startups based on search queries. It leverages Google Search API and Google's Gemini AI models for intelligent data processing, filtering, and validation.
+
+## Overview
+
+The Startup Intelligence Finder uses a sophisticated three-phase pipeline to gather high-quality, structured data about startups matching your search criteria. It combines traditional web crawling techniques with advanced AI capabilities to deliver comprehensive startup profiles in a clean CSV format.
 
 ## Features
 
-- **Three-Phase Processing Pipeline**:
-  - **Phase 1 (Discovery)**: Discovers startup names from search results
-  - **Phase 2 (Enrichment)**: Enriches data for each startup from multiple sources
-  - **Phase 3 (Validation)**: Uses Gemini 2.5 Pro to validate and correct data before output
-- **LLM-Based Filtering**: Uses Gemini AI to extract, validate, and filter startup names
-- **Parallel Processing**: Utilizes multi-threading for faster data collection and processing
+### Core Pipeline
+
+- **Three-Phase Processing Architecture**:
+  - **Phase 1 (Discovery)**: Identifies relevant startup names from search results exclusively using LLM-based filtering with Gemini AI
+  - **Phase 2 (Enrichment)**: Gathers detailed information about each startup from multiple sources using parallel processing
+  - **Phase 3 (Validation)**: Uses Gemini 2.5 Pro to validate, correct, and standardize data before final output
+
+### Advanced Capabilities
+
+- **Intelligent Query Expansion**: Generates up to 100 semantically similar search queries to maximize discovery
+- **Multi-Source Data Collection**: Prioritizes official websites and LinkedIn profiles, with fallbacks to general search results
+- **Parallel Processing**: Utilizes multi-threading for significantly faster data collection and processing
 - **Adaptive Crawling**: Implements Jina-inspired techniques for more effective data extraction
 - **URL Normalization**: Avoids duplicate content through intelligent URL handling
-- **LLM-Based Data Extraction**: Extracts structured data from multiple sources using AI
+- **Error Recovery**: Includes robust fallback mechanisms throughout the pipeline
+
+### AI Integration
+
+- **LLM-Based Filtering**: Uses Gemini AI to extract, validate, and filter startup names
+- **Structured Data Extraction**: Employs AI to extract consistent information from unstructured content
 - **Data Validation**: Automatically detects and corrects anomalies in the collected data
-- **CSV Generation**: Outputs clean, structured data in CSV format for easy analysis
-- **Customizable Queries**: Search for startups in any industry or location
+- **Format Standardization**: Ensures consistent data formats across all entries
+
+### User Experience
+
+- **Flexible Input Options**: Accept direct startup names, file input, or search queries
+- **Interactive Mode**: User-friendly guided experience with clear prompts
+- **Command-Line Interface**: Powerful options for automation and customization
+- **Comprehensive Output**: Detailed CSV with key startup information
 
 ## Project Structure
 
@@ -66,105 +87,204 @@ startup-finder/
 
 ## Usage
 
-### Basic Usage
+The Startup Intelligence Finder offers multiple ways to use the tool, from a simple interactive mode to powerful command-line options for advanced users.
 
-Run the main script:
+### Interactive Mode
 
-```
+For a guided experience, simply run:
+
+```bash
 python startup_finder.py
 ```
 
-This will start the interactive mode where you can:
-1. Search for startups using a query
-2. Directly input startup names
-3. Load startup names from a file
+This launches the interactive mode which will:
+1. Present you with three options:
+   - Search for startups using a query
+   - Directly input startup names
+   - Load startup names from a file
+2. Guide you through setting parameters like:
+   - Number of search results to process
+   - Number of query expansions (1-100)
+   - Number of parallel workers
+   - Output file location
 
-### Command Line Options
+### Command Line Interface
 
-You can also run the script with command-line arguments:
+For automation or more control, use command-line arguments:
 
-```
-python startup_finder.py --query "fintech startups in singapore" --max-results 10 --output-file data/fintech_startups.csv
-```
+```bash
+# Basic search query
+python startup_finder.py --query "fintech startups in singapore"
 
-Key options:
-- `--query` or `-q`: Search query to find startups
-- `--max-results` or `-m`: Maximum number of search results to process per query (default: 10)
-- `--num-expansions` or `-n`: Number of query expansions to generate (1-100, default: 10)
-- `--output-file` or `-o`: Path to the output CSV file
-- `--no-expansion`: Disable query expansion
-- `--startups` or `-s`: List of startup names to directly search for, bypassing discovery phase
-- `--startups-file` or `-f`: Path to a file containing startup names, one per line
-- `--max-workers` or `-w`: Maximum number of parallel workers for web crawling (default: 20)
-
-### Direct Startup Input
-
-If you already know which startups you want to research:
-
-```
-python startup_finder.py --startups "Company1" "Company2" "Company3"
+# Advanced configuration
+python startup_finder.py --query "AI startups in healthcare" --max-results 15 --num-expansions 50 --max-workers 30 --output-file data/healthcare_ai_startups.csv
 ```
 
-### Loading Startups from a File
+#### Available Options
 
-You can also load startup names from a text file:
+| Option | Short | Description | Default |
+|--------|-------|-------------|---------|
+| `--query` | `-q` | Search query to find startups | (Required unless using `--startups`) |
+| `--max-results` | `-m` | Maximum search results per query | 10 |
+| `--num-expansions` | `-n` | Number of query expansions to generate | 10 |
+| `--output-file` | `-o` | Path to the output CSV file | data/startups_[timestamp].csv |
+| `--no-expansion` | | Disable query expansion | (Expansion enabled) |
+| `--startups` | `-s` | List of startup names to research | (None) |
+| `--startups-file` | `-f` | File containing startup names | (None) |
+| `--max-workers` | `-w` | Parallel workers for web crawling | 40 |
+| `--upload-to-drive` | `-u` | Upload CSV to Google Drive | (Disabled) |
+| `--credentials-path` | `-c` | Path to Google Drive credentials | credentials.json |
 
+### Input Methods
+
+#### 1. Search Query
+
+The most common approach - provide a search query and let the tool discover startups:
+
+```bash
+python startup_finder.py --query "cybersecurity startups in london"
 ```
+
+#### 2. Direct Startup Input
+
+When you already know which startups you want to research:
+
+```bash
+python startup_finder.py --startups "Monzo" "Revolut" "Starling Bank"
+```
+
+#### 3. Startup List from File
+
+For researching a large list of startups:
+
+```bash
 python startup_finder.py --startups-file my_startups.txt
 ```
 
-The script will:
-- Discover startup names from search results (or use provided names)
-- Filter out non-startup names using Gemini AI
-- Enrich data for each startup using parallel processing
-- Validate and correct data using Gemini 2.5 Pro
-- Generate a clean, validated CSV file with the results
+Where `my_startups.txt` contains one startup name per line.
 
-## Data Sources
+### Processing Pipeline
 
-The tool uses a sophisticated approach to gather data from multiple sources:
+For any input method, the tool follows the same three-phase pipeline:
 
-### Google Search as a Proxy
+1. **Discovery Phase**:
+   - For search queries: Discovers startup names from search results
+   - For direct input: Uses the provided startup names
 
-Instead of directly scraping websites like LinkedIn (which can be against terms of service), the tool uses Google Search as a proxy:
-- Uses site-specific searches (e.g., `site:linkedin.com/company/ "company name"`)
-- Extracts data from search snippets and cached pages
-- Respects rate limits and robots.txt rules
+2. **Enrichment Phase**:
+   - Gathers detailed information about each startup
+   - Collects data from official websites, LinkedIn, and other sources
+   - Uses parallel processing for efficiency
 
-### Priority of Data Sources
+3. **Validation Phase**:
+   - Uses Gemini 2.5 Pro to validate and correct the collected data
+   - Standardizes formats and fills in missing information where possible
+   - Ensures data quality and consistency
 
-Data is collected with the following priority:
-1. **Official Company Website**: Primary source for company information
-2. **LinkedIn Company Page**: For company size, founding information, and team details
-3. **General Search Results**: For additional context and missing information
+4. **Output Generation**:
+   - Creates a comprehensive CSV file with detailed startup information
+   - Includes company details, contact information, and business data
+   - Optionally uploads results directly to Google Drive for cloud storage
 
-### LLM-Based Extraction
+## Data Collection Architecture
 
-The tool uses Gemini AI to extract structured data from unstructured content:
-- Identifies company descriptions, locations, founding years, etc.
-- Validates and filters startup names to ensure relevance
-- Combines information from multiple sources into a coherent profile
+The Startup Intelligence Finder employs a sophisticated multi-source data collection strategy designed to maximize data quality while respecting website terms of service.
 
-## Example Output
+### Ethical Data Collection
 
-The CSV file contains the following columns:
-- Company Name
-- Website
-- LinkedIn
-- Location
-- Founded Year
-- Industry
-- Company Size
-- Funding
-- Product Description
-- Products/Services
-- Team
-- Contact
-- Source URL
+Instead of directly scraping websites (which can violate terms of service), the tool uses a combination of:
 
-## Testing
+- **Google Search API**: For discovering content and using search snippets
+- **Site-Specific Queries**: For targeted data collection (e.g., `site:linkedin.com/company/ "company name"`)
+- **Cached Content**: For accessing information without heavy site traffic
+- **Robots.txt Compliance**: Automatically respects website crawling policies
+- **Rate Limiting**: Implements delays to avoid overwhelming any single data source
 
-The project includes a comprehensive test suite in the `tests/` directory. To run the tests:
+### Data Source Prioritization
+
+The system collects data with the following priority hierarchy:
+
+1. **Official Company Website**
+   - Company descriptions and mission statements
+   - Product and service information
+   - Team details and company history
+   - Contact information and locations
+
+2. **LinkedIn Company Pages**
+   - Company size and employee count
+   - Founding information and timeline
+   - Industry categorization
+   - Funding rounds and investors
+
+3. **General Search Results**
+   - News articles and press releases
+   - Industry reports and analyses
+   - Conference and event mentions
+   - Additional context and verification
+
+### AI-Powered Data Extraction
+
+The tool leverages Google's Gemini AI models at multiple stages:
+
+1. **Gemini 2.5 Flash** (for routine tasks)
+   - Query expansion for broader discovery
+   - Initial data extraction from structured content
+   - Initial processing of search results
+
+2. **Gemini 2.5 Pro** (for complex tasks)
+   - Startup name validation and filtering
+   - Comprehensive data extraction from unstructured content
+   - Final data validation and correction
+   - Format standardization and anomaly detection
+
+### Data Processing Pipeline
+
+The data flows through a sophisticated processing pipeline:
+
+1. **Discovery**: Identifies potential startup names from search results using Gemini AI
+2. **Validation**: Filters out non-startup entities and ensures relevance using LLM-based analysis
+3. **Enrichment**: Gathers detailed information from multiple sources
+4. **Normalization**: Standardizes data formats and structures
+5. **Verification**: Cross-references information across sources
+6. **Correction**: Identifies and fixes anomalies or inconsistencies
+7. **Consolidation**: Combines all information into a unified profile
+
+## Output Format
+
+The tool generates a comprehensive CSV file with detailed startup information, structured for easy analysis and integration with other tools.
+
+### CSV Structure
+
+| Column | Description | Example |
+|--------|-------------|---------|
+| Company Name | Official name of the startup | Monzo |
+| Website | Company's official website | https://monzo.com |
+| LinkedIn | LinkedIn company page | https://linkedin.com/company/monzo |
+| Location | Company headquarters | London, UK |
+| Founded Year | Year the company was founded | 2015 |
+| Industry | Primary industry or sector | Fintech |
+| Company Size | Number of employees | 1,001-5,000 employees |
+| Funding | Latest funding information | $500M Series G |
+| Product Description | Brief description of main product | Digital banking platform |
+| Products/Services | List of key offerings | Mobile banking, Business accounts, Savings |
+| Team | Key team members | Tom Blomfield (Co-founder), TS Anil (CEO) |
+| Contact | Contact information | contact@monzo.com |
+| Source URL | Original discovery source | https://techcrunch.com/... |
+
+### Data Quality
+
+The final output undergoes rigorous validation and standardization:
+
+- **Consistent Formatting**: Standardized date formats, location names, and industry terms
+- **Validated URLs**: Properly formatted and verified website and LinkedIn URLs
+- **Normalized Company Names**: Consistent capitalization and legal entity handling
+- **Structured Information**: Well-organized data fields with appropriate content
+
+## Testing Framework
+
+The project includes a comprehensive test suite in the `tests/` directory, organized into logical components:
+
+### Running Tests
 
 ```bash
 # Run all tests
@@ -172,32 +292,109 @@ python run_tests.py
 
 # Run a specific test
 python run_tests.py test_enhanced_crawler
+
+# Run tests for a specific component
+python run_tests.py crawler
 ```
 
-The test suite is organized into subdirectories:
+### Test Organization
 
-- **tests/crawler/**: Tests for crawler components
-  - Enhanced crawler with Jina-inspired techniques
-  - Parallel processing
-  - URL normalization and adaptive crawling
-  - Startup discovery and data enrichment
-  - LinkedIn and company website data collection
+The test suite is structured to match the application architecture:
 
-- **tests/collector/**: Tests for collector components
-  - Query expansion
-  - AutoScraper functionality
+#### Crawler Tests (`tests/crawler/`)
+- **Enhanced Crawler**: Tests for Jina-inspired techniques
+- **Parallel Processing**: Validates multi-threaded data collection
+- **URL Normalization**: Ensures proper URL handling and deduplication
+- **Startup Discovery**: Tests the LLM-based name identification and validation process
+- **Data Enrichment**: Validates the information gathering process
 
-- **tests/utils/**: Tests for utility components
-  - API key handling
-  - LLM-based filtering
+#### Collector Tests (`tests/collector/`)
+- **Query Expansion**: Tests the semantic query expansion functionality
+- **Input Handling**: Validates different input methods and formats
 
-## Dependencies
+#### Utility Tests (`tests/utils/`)
+- **API Clients**: Tests for Google Search and Gemini API integration
+- **Data Cleaning**: Validates normalization and standardization functions
+- **Environment Setup**: Tests API key handling and configuration
 
-- Google API Client
-- Gemini API
-- BeautifulSoup4
-- Requests
-- Python-dotenv
+## Technical Requirements
+
+### Dependencies
+
+The project relies on the following Python packages:
+
+- **API Integration**
+  - `google-api-python-client`: For Google Search API integration
+  - `google-generativeai`: For Gemini AI model access
+  - `python-dotenv`: For environment variable management
+
+- **Web Processing**
+  - `requests`: For HTTP requests and web page fetching
+  - `beautifulsoup4`: For HTML parsing and data extraction
+  - `lxml`: For advanced HTML/XML processing
+
+- **Data Processing**
+  - `pandas` (optional): For advanced data manipulation
+  - `csv`: For CSV file handling (standard library)
+  - `json`: For JSON processing (standard library)
+
+### API Requirements
+
+To use this tool, you'll need to obtain the following API keys:
+
+1. **Google Gemini API Key**
+   - Sign up at [Google AI Studio](https://ai.google.dev/)
+   - Create a new API key
+   - Provides access to Gemini 2.5 Flash and Pro models
+
+2. **Google Custom Search API Key**
+   - Sign up at [Google Cloud Console](https://console.cloud.google.com/)
+   - Enable the Custom Search API
+   - Create API credentials
+
+3. **Custom Search Engine ID**
+   - Create a Custom Search Engine at [Programmable Search Engine](https://programmablesearchengine.google.com/)
+   - Configure it to search the entire web
+   - Copy the Search Engine ID (cx value)
+
+4. **Google Drive API** (Optional, for cloud storage)
+   - Sign up at [Google Cloud Console](https://console.cloud.google.com/)
+   - Enable the Google Drive API
+   - Create OAuth 2.0 Client ID credentials
+   - Download the credentials as JSON and save as `credentials.json`
+
+The first three keys should be stored in your `.env` file as described in the Installation section.
+
+### Google Drive Integration
+
+The Startup Finder can automatically upload your CSV results to Google Drive, making it ideal for cloud deployments:
+
+#### Setting Up Google Drive Integration
+
+1. **Create a Google Cloud Project**:
+   - Go to [Google Cloud Console](https://console.cloud.google.com/)
+   - Create a new project or select an existing one
+   - Enable the Google Drive API
+
+2. **Create OAuth Credentials**:
+   - Go to "APIs & Services" > "Credentials"
+   - Click "Create Credentials" > "OAuth client ID"
+   - Select "Desktop app" as the application type
+   - Download the JSON file and save it as `credentials.json` in your project directory
+
+3. **Using Google Drive Upload**:
+   - Command line: `python startup_finder.py --query "your query" --upload-to-drive`
+   - Interactive mode: Select "y" when asked about uploading to Google Drive
+   - First-time use: You'll be prompted to authorize the application in your browser
+
+4. **Authentication Flow**:
+   - On first run, a browser window will open asking you to log in to your Google account
+   - Grant the requested permissions to the application
+   - The authentication token will be saved for future use
+
+5. **Cloud Deployment**:
+   - When deploying to cloud services like Render.com, include your `credentials.json` file
+   - For headless servers, you may need to pre-authenticate and include the token.json file
 
 ## License
 

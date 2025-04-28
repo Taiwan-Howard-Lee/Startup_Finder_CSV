@@ -14,9 +14,10 @@ dist/
 build/
 *.egg-info/
 
-# Temporary files
+# Temporary files and credentials
 *.json
 !requirements.json
+!credentials.json.example
 
 # macOS specific files
 .DS_Store

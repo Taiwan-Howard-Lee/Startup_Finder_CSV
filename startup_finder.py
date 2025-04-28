@@ -14,7 +14,7 @@ import time
 import logging
 import argparse
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 # Import setup_env to ensure API keys are available
 import setup_env
@@ -25,6 +25,7 @@ from src.processor.website_extractor import WebsiteExtractor
 from src.processor.linkedin_extractor import LinkedInExtractor
 from src.collector.query_expander import QueryExpander
 from src.utils.api_client import GeminiAPIClient
+from src.utils.drive_uploader import upload_to_drive
 
 # Set up logging
 logging.basicConfig(
@@ -391,17 +392,22 @@ def validate_and_correct_data_with_gemini(enriched_data: List[Dict[str, Any]], q
         return enriched_data
 
 
-def generate_csv_from_startups(enriched_data: List[Dict[str, Any]], output_file: str, create_dir: bool = True):
+def generate_csv_from_startups(enriched_data: List[Dict[str, Any]], output_file: str, create_dir: bool = True,
+                           upload_to_google_drive: bool = False, credentials_path: str = 'credentials.json') -> Tuple[bool, Optional[str]]:
     """
-    Generate a CSV file from the enriched startup data.
+    Generate a CSV file from the enriched startup data and optionally upload to Google Drive.
 
     Args:
         enriched_data: List of enriched startup dictionaries.
         output_file: Path to the output CSV file.
         create_dir: Whether to create the directory if it doesn't exist.
+        upload_to_google_drive: Whether to upload the CSV to Google Drive.
+        credentials_path: Path to the Google Drive API credentials file.
 
     Returns:
-        bool: True if successful, False otherwise.
+        Tuple containing:
+            - bool: True if CSV generation was successful, False otherwise.
+            - Optional[str]: Google Drive link if upload was successful, None otherwise.
     """
     # Define the fields we want to include in the CSV
     fields = [
@@ -419,6 +425,8 @@ def generate_csv_from_startups(enriched_data: List[Dict[str, Any]], output_file:
         "Contact",
         "Source URL"
     ]
+
+    drive_link = None
 
     try:
         # Create directory if it doesn't exist and create_dir is True
@@ -446,15 +454,39 @@ def generate_csv_from_startups(enriched_data: List[Dict[str, Any]], output_file:
                 writer.writerow(row)
 
         print(f"CSV file generated: {output_file}")
-        return True
+
+        # Upload to Google Drive if requested
+        if upload_to_google_drive:
+            print("\nUploading CSV file to Google Drive...")
+            try:
+                # Create a folder name based on the search query or timestamp
+                folder_name = f"Startup_Finder_{time.strftime('%Y%m%d')}"
+
+                # Upload the file to Google Drive
+                drive_link = upload_to_drive(
+                    file_path=output_file,
+                    credentials_path=credentials_path,
+                    folder_name=folder_name
+                )
+
+                if drive_link:
+                    print(f"CSV file uploaded to Google Drive successfully!")
+                    print(f"Google Drive link: {drive_link}")
+                else:
+                    print("Failed to upload CSV file to Google Drive.")
+            except Exception as e:
+                print(f"Error uploading to Google Drive: {e}")
+
+        return True, drive_link
     except Exception as e:
         print(f"Error generating CSV file: {e}")
-        return False
+        return False, None
 
 
 def run_startup_finder(query: str, max_results: int = 5, num_expansions: int = 3,
                       output_file: Optional[str] = None, use_query_expansion: bool = True,
-                      direct_startups: Optional[List[str]] = None):
+                      direct_startups: Optional[List[str]] = None, upload_to_google_drive: bool = False,
+                      credentials_path: str = 'credentials.json'):
     """
     Run the startup finder and generate a CSV file with the results.
 
@@ -464,6 +496,9 @@ def run_startup_finder(query: str, max_results: int = 5, num_expansions: int = 3
         num_expansions: Number of query expansions to generate.
         output_file: Path to the output CSV file.
         use_query_expansion: Whether to use query expansion.
+        direct_startups: List of startup names to directly search for.
+        upload_to_google_drive: Whether to upload the CSV to Google Drive.
+        credentials_path: Path to the Google Drive API credentials file.
 
     Returns:
         bool: True if successful, False otherwise.
@@ -586,12 +621,18 @@ def run_startup_finder(query: str, max_results: int = 5, num_expansions: int = 3
 
     print(f"\nPhase 3 completed in {phase3_time:.2f} seconds")
 
-    # Generate CSV file
+    # Generate CSV file and optionally upload to Google Drive
     print("\n" + "=" * 80)
     print("GENERATING CSV FILE")
     print("=" * 80)
 
-    success = generate_csv_from_startups(validated_results, output_file)
+    success, drive_link = generate_csv_from_startups(
+        validated_results,
+        output_file,
+        create_dir=True,
+        upload_to_google_drive=upload_to_google_drive,
+        credentials_path=credentials_path
+    )
 
     if success:
         # Summary
@@ -607,6 +648,9 @@ def run_startup_finder(query: str, max_results: int = 5, num_expansions: int = 3
         print(f"Startups found: {len(all_startup_info)}")
         print(f"Startups validated: {len(validated_results)}")
         print(f"CSV file generated: {output_file}")
+
+        if drive_link:
+            print(f"Google Drive link: {drive_link}")
     else:
         print("\nFailed to generate CSV file.")
 
@@ -634,8 +678,12 @@ def parse_arguments():
                         help="List of startup names to directly search for, bypassing discovery phase")
     parser.add_argument("--startups-file", "-f", type=str,
                         help="Path to a file containing startup names, one per line")
-    parser.add_argument("--max-workers", "-w", type=int, default=20,
-                        help="Maximum number of parallel workers for web crawling (default: 20)")
+    parser.add_argument("--max-workers", "-w", type=int, default=40,
+                        help="Maximum number of parallel workers for web crawling (default: 40)")
+    parser.add_argument("--upload-to-drive", "-u", action="store_true",
+                        help="Upload the CSV file to Google Drive")
+    parser.add_argument("--credentials-path", "-c", type=str, default="credentials.json",
+                        help="Path to the Google Drive API credentials file (default: credentials.json)")
 
     return parser.parse_args()
 
@@ -744,6 +792,15 @@ def interactive_mode():
     default_filename = f"data/startups_{timestamp}.csv"  # Store in data directory by default
     output_file = input(f"\nOutput CSV file name (default: {default_filename}): ").strip() or default_filename
 
+    # Ask if user wants to upload to Google Drive
+    upload_to_drive = input("\nUpload results to Google Drive? (y/n, default: n): ").strip().lower() == 'y'
+
+    # Get credentials path if uploading to Google Drive
+    credentials_path = "credentials.json"  # Default
+    if upload_to_drive:
+        credentials_path = input(f"\nPath to Google Drive credentials file (default: {credentials_path}): ").strip() or credentials_path
+        print("\nNote: You will need to authenticate with Google when the program runs.")
+
     # Run the startup finder
     return run_startup_finder(
         query=query,
@@ -751,7 +808,9 @@ def interactive_mode():
         num_expansions=num_expansions,
         output_file=output_file,
         use_query_expansion=use_query_expansion,
-        direct_startups=direct_startups
+        direct_startups=direct_startups,
+        upload_to_google_drive=upload_to_drive,
+        credentials_path=credentials_path
     )
 
 
@@ -781,7 +840,9 @@ if __name__ == "__main__":
             num_expansions=args.num_expansions,
             output_file=args.output_file,
             use_query_expansion=not args.no_expansion,
-            direct_startups=direct_startups
+            direct_startups=direct_startups,
+            upload_to_google_drive=args.upload_to_drive,
+            credentials_path=args.credentials_path
         )
     # Otherwise, run in interactive mode
     else:
