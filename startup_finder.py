@@ -303,7 +303,7 @@ def validate_and_correct_data_with_gemini(enriched_data: List[Dict[str, Any]], q
         # This ensures the prompt and validation logic stay in sync
 
         # Process startups in batches to avoid overwhelming the API
-        batch_size = 5
+        batch_size = 10  # Increased from 5 to 10 for more efficient processing
         validated_data = []
 
         for i in range(0, len(enriched_data), batch_size):
@@ -320,15 +320,17 @@ def validate_and_correct_data_with_gemini(enriched_data: List[Dict[str, Any]], q
 
             Please analyze the following startup data for anomalies, inconsistencies, or missing information, and provide a corrected version.
 
-            IMPORTANT: Use the search tool to verify company information when possible, especially for:
-            - Company existence and correct name spelling
-            - Founded year
-            - Location
-            - Industry classification
-            - Funding information
-            - Key people/founders
+            IMPORTANT: Use the search tool extensively to verify company information. For EACH company, perform multiple searches to verify:
+            - Company existence and correct name spelling (search for the company name)
+            - Founded year (search for "when was [company] founded")
+            - Location (search for "[company] headquarters location")
+            - Industry classification (search for "[company] industry sector")
+            - Funding information (search for "[company] funding rounds investment")
+            - Key people/founders (search for "[company] founders CEO leadership team")
+            - Company size (search for "[company] number of employees")
+            - Products and services (search for "[company] products services offerings")
 
-            For each company, search for its name plus relevant keywords to verify the information.
+            For each company, perform at least 5-8 different searches to thoroughly verify all information. Be thorough and comprehensive in your verification.
 
             For each startup, check and correct the following:
 
@@ -632,7 +634,7 @@ def run_startup_finder(query: str, max_results: int = 5, num_expansions: int = 3
         output_file += '.csv'
 
     # Create an enhanced crawler with maximum parallel processing
-    max_workers = 20  # Use a high number of workers for maximum speed
+    max_workers = 30  # Use a high number of workers for maximum speed
     crawler = EnhancedStartupCrawler(max_workers=max_workers)
     print(f"Using {max_workers} parallel workers for maximum speed")
 
@@ -782,8 +784,8 @@ def parse_arguments():
                         help="List of startup names to directly search for, bypassing discovery phase")
     parser.add_argument("--startups-file", "-f", type=str,
                         help="Path to a file containing startup names, one per line")
-    parser.add_argument("--max-workers", "-w", type=int, default=40,
-                        help="Maximum number of parallel workers for web crawling (default: 40)")
+    parser.add_argument("--max-workers", "-w", type=int, default=50,
+                        help="Maximum number of parallel workers for web crawling (default: 50)")
     # Google Drive upload options removed
 
     return parser.parse_args()
@@ -855,14 +857,14 @@ def interactive_mode():
             return False
 
     # Get number of results from user (only relevant for query search)
-    max_results = 10
+    max_results = 20
     if not direct_startups:
         try:
-            max_results = int(input("\nMaximum number of search results to process (1-20, default: 10): ").strip() or "10")
-            max_results = max(1, min(20, max_results))  # Ensure between 1 and 20
+            max_results = int(input("\nMaximum number of search results to process (1-50, default: 20): ").strip() or "20")
+            max_results = max(1, min(50, max_results))  # Ensure between 1 and 50
         except ValueError:
-            print("Invalid input. Using default value of 10.")
-            max_results = 10
+            print("Invalid input. Using default value of 20.")
+            max_results = 20
 
     # Ask if user wants to use query expansion (only relevant for query search)
     use_query_expansion = True
@@ -880,13 +882,13 @@ def interactive_mode():
             num_expansions = 10
 
     # Get number of parallel workers
-    max_workers = 20  # Default
+    max_workers = 30  # Default
     try:
-        max_workers = int(input("\nNumber of parallel workers for web crawling (1-30, default: 20): ").strip() or "20")
-        max_workers = max(1, min(30, max_workers))  # Ensure between 1 and 30
+        max_workers = int(input("\nNumber of parallel workers for web crawling (1-50, default: 30): ").strip() or "30")
+        max_workers = max(1, min(50, max_workers))  # Ensure between 1 and 50
     except ValueError:
-        print("Invalid input. Using default value of 20.")
-        max_workers = 20
+        print("Invalid input. Using default value of 30.")
+        max_workers = 30
 
     # Get output file name
     timestamp = time.strftime("%Y%m%d_%H%M%S")

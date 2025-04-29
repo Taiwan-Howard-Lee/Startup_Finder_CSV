@@ -25,7 +25,7 @@ class EnhancedStartupCrawler(StartupCrawler):
     to extract data from LinkedIn and Crunchbase.
     """
 
-    def enrich_startup_data(self, startup_info_list: List[Dict[str, Any]], max_results_per_startup: int = 5) -> List[Dict[str, Any]]:
+    def enrich_startup_data(self, startup_info_list: List[Dict[str, Any]], max_results_per_startup: int = 10) -> List[Dict[str, Any]]:
         """
         Enrich a list of startup data with additional information.
 
@@ -156,7 +156,7 @@ class EnhancedStartupCrawler(StartupCrawler):
 
             # Search for LinkedIn information
             linkedin_query = f"site:linkedin.com/company/ \"{company_name}\""
-            linkedin_results = self.google_search.search(linkedin_query, max_results=3)
+            linkedin_results = self.google_search.search(linkedin_query, max_results=5)
 
             if linkedin_results:
                 # First, try to get the LinkedIn URL if we don't have it
@@ -229,14 +229,14 @@ class EnhancedStartupCrawler(StartupCrawler):
             crunchbase_data = CrunchbaseExtractor.search_crunchbase_data(
                 google_search=self.google_search,
                 company_name=company_name,
-                max_results=3,
+                max_results=5,
                 api_client=api_client
             )
 
             # Try an alternative search query to get more information about funding
             try:
                 funding_query = f"\"{company_name}\" funding raised crunchbase"
-                funding_results = self.google_search.search(funding_query, max_results=3)
+                funding_results = self.google_search.search(funding_query, max_results=5)
 
                 if funding_results and "Funding" not in crunchbase_data:
                     # Combine all snippets into a single text for better context
@@ -349,7 +349,7 @@ class EnhancedStartupCrawler(StartupCrawler):
                 # If direct access fails, try an alternative approach using Google search
                 try:
                     about_query = f"site:{data['Website']} about {company_name}"
-                    about_results = self.google_search.search(about_query, max_results=2)
+                    about_results = self.google_search.search(about_query, max_results=5)
 
                     if about_results:
                         # Combine all snippets into a single text for better context
