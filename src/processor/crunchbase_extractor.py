@@ -44,11 +44,19 @@ class CrunchbaseExtractor:
                 "Founded Year",
                 "Location",
                 "Founders",
+                "Founder LinkedIn Profiles",
+                "CEO/Leadership",
                 "Company Description",
                 "Industry",
                 "Company Size",
                 "Funding Rounds",
-                "Investors"
+                "Investors",
+                "Technology Stack",
+                "Competitors",
+                "Market Focus",
+                "Social Media Links",
+                "Latest News",
+                "Growth Metrics"
             ]
 
             # Get text content from the soup for better processing
@@ -138,10 +146,18 @@ class CrunchbaseExtractor:
                 "Founded Year",
                 "Location",
                 "Founders",
+                "Founder LinkedIn Profiles",
+                "CEO/Leadership",
                 "Industry",
                 "Company Size",
                 "Funding Rounds",
-                "Investors"
+                "Investors",
+                "Technology Stack",
+                "Competitors",
+                "Market Focus",
+                "Social Media Links",
+                "Latest News",
+                "Growth Metrics"
             ]
 
             # Use the LLM to extract structured data

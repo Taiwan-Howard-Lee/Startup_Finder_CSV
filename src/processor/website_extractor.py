@@ -44,8 +44,16 @@ class WebsiteExtractor:
                 "Products/Services",
                 "Team",
                 "Founders",
+                "Founder LinkedIn Profiles",
+                "CEO/Leadership",
                 "Industry",
-                "Social Media"
+                "Technology Stack",
+                "Competitors",
+                "Market Focus",
+                "Social Media Links",
+                "Latest News",
+                "Investors",
+                "Growth Metrics"
             ]
 
             # Get text content from the soup for better processing

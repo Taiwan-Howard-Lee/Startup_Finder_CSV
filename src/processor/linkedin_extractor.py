@@ -43,8 +43,17 @@ class LinkedInExtractor:
                 "Founded Year",
                 "Location",
                 "Founders",
+                "Founder LinkedIn Profiles",
+                "CEO/Leadership",
                 "Funding",
-                "Products/Services"
+                "Products/Services",
+                "Technology Stack",
+                "Competitors",
+                "Market Focus",
+                "Social Media Links",
+                "Latest News",
+                "Investors",
+                "Growth Metrics"
             ]
 
             # Get text content from the soup for better processing

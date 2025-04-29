@@ -89,11 +89,11 @@ class GeminiAPIClient:
         # Create a more detailed prompt for better variations
         prompt = f"""
         You are a startup intelligence researcher specializing in query expansion. Expand the following search query
-        into {actual_expansions} different variations to find startups matching this criteria.
+        into {actual_expansions} different variations to find startups matching this criteria on google search. Consider
+        different phrasings, synonyms, and industry-specific terminology.
 
         Make each variation unique but semantically similar to the original query.
         Focus on variations that would help discover different startups in this space.
-        Consider different phrasings, synonyms, and industry-specific terminology.
 
         Original query: "{query}"
 
@@ -242,17 +242,57 @@ class GeminiAPIClient:
         if len(content) > max_content_length:
             content = content[:max_content_length] + "..."
 
-        # Create a prompt for Gemini
+        # Create a more detailed prompt for Gemini with specific instructions for each field
         fields_str = ", ".join(fields)
         prompt = f"""
-        You are a startup intelligence data extractor. Extract the following information about
-        {company_name} from this {source_type} content: {fields_str}.
+        You are a startup intelligence data extractor specializing in comprehensive company analysis.
+        Extract the following information about {company_name} from this {source_type} content: {fields_str}.
 
         Content:
         {content}
 
-        For each field, provide the most accurate information available in the content.
+        For each field, provide the most accurate and detailed information available in the content.
         If information for a field is not available, respond with null.
+
+        Specific guidelines for extraction:
+
+        - Company Description: Extract a comprehensive description of what the company does, its mission, and value proposition.
+
+        - Founders: List all founders with their full names. Format as a comma-separated list.
+
+        - Founder LinkedIn Profiles: Extract LinkedIn profile URLs for founders if available. Format as a JSON array.
+
+        - CEO/Leadership: Extract information about the CEO and key leadership team members with their roles.
+
+        - Location: Extract the company's headquarters location. Include city, region/state, and country if available.
+
+        - Founded Year: Extract the year the company was founded as a 4-digit number.
+
+        - Industry: Extract the primary industry and any sub-industries the company operates in.
+
+        - Company Size: Extract the number of employees, preferably as a range (e.g., "11-50 employees").
+
+        - Funding: Extract detailed funding information including total amount raised, latest round, and date if available.
+
+        - Technology Stack: Extract technologies, programming languages, frameworks, or platforms used by the company.
+
+        - Competitors: Extract names of direct competitors if mentioned. Format as a comma-separated list.
+
+        - Market Focus: Extract the target market, customer segments, or geographical focus areas.
+
+        - Social Media Links: Extract all social media profile URLs. Format as a JSON object with platform names as keys.
+
+        - Latest News: Extract recent news, announcements, or milestones about the company.
+
+        - Investors: Extract names of investors, VCs, or investment firms that have funded the company.
+
+        - Growth Metrics: Extract any metrics related to company growth, such as user numbers, revenue growth, etc.
+
+        - Products/Services: Extract detailed information about the company's products or services.
+
+        - Team: Extract information about the team size, key team members, and their roles.
+
+        - Contact: Extract contact information including email, phone, or contact form URL.
 
         Format your response as a JSON object with the requested fields as keys.
         Be precise and extract only factual information present in the content.

@@ -8,7 +8,6 @@ to generate a detailed CSV file with startup information.
 """
 
 import os
-import sys
 import csv
 import time
 import logging
@@ -300,21 +299,8 @@ def validate_and_correct_data_with_gemini(enriched_data: List[Dict[str, Any]], q
         gemini_client = GeminiAPIClient()
         pro_model = gemini_client.pro_model
 
-        # Define the fields we want to validate
-        fields = [
-            "Company Name",
-            "Website",
-            "LinkedIn",
-            "Location",
-            "Founded Year",
-            "Industry",
-            "Company Size",
-            "Funding",
-            "Product Description",
-            "Products/Services",
-            "Team",
-            "Contact"
-        ]
+        # Fields to validate are now defined directly in the prompt
+        # This ensures the prompt and validation logic stay in sync
 
         # Process startups in batches to avoid overwhelming the API
         batch_size = 5
@@ -335,16 +321,121 @@ def validate_and_correct_data_with_gemini(enriched_data: List[Dict[str, Any]], q
             Please analyze the following startup data for anomalies, inconsistencies, or missing information, and provide a corrected version.
 
             For each startup, check and correct the following:
-            1. Ensure company names are properly formatted and don't contain artifacts
-            2. Verify websites are valid and properly formatted (add https:// if missing)
-            3. Ensure LinkedIn URLs are valid
-            4. Format locations consistently
-            5. Ensure founded years are valid (4-digit years, not in the future)
-            6. Standardize industry names
-            7. Format company sizes consistently (e.g., "1-10 employees", "11-50 employees")
-            8. Format funding information consistently
-            9. Improve product descriptions if they're unclear or too short
-            10. Fill in missing information where possible based on other fields
+
+            1. Company Name:
+               - Ensure proper capitalization and formatting
+               - Remove any artifacts or unnecessary text
+               - Standardize suffixes (Inc., Ltd., LLC, etc.)
+
+            2. Website:
+               - Verify URLs are valid and properly formatted
+               - Add https:// if missing
+               - Remove trailing slashes for consistency
+               - Ensure the domain matches the company name when possible
+
+            3. LinkedIn:
+               - Ensure URLs are valid LinkedIn company page URLs
+               - Format consistently as https://www.linkedin.com/company/...
+
+            4. Location:
+               - Format consistently as "City, Region/State, Country"
+               - Use full country names rather than abbreviations
+               - For multiple locations, use a consistent format like ["Location 1", "Location 2"]
+
+            5. Founded Year:
+               - Ensure it's a valid 4-digit year
+               - Verify it's not in the future
+               - Convert text descriptions to years when possible
+
+            6. Industry:
+               - Standardize industry terminology
+               - Use primary industry first, followed by sub-industries
+               - Capitalize properly
+
+            7. Company Size:
+               - Format consistently as ranges (e.g., "1-10 employees", "11-50 employees")
+               - Convert numeric values to ranges when appropriate
+
+            8. Funding:
+               - Format consistently, preferably as a structured object
+               - Include total funding amount, latest round type, and date when available
+               - Use standard currency formatting (e.g., "$10M")
+
+            9. Product Description:
+               - Ensure it's clear, concise, and informative
+               - Improve unclear or too short descriptions
+               - Remove marketing language while preserving factual information
+
+            10. Products/Services:
+                - Format as a list of specific offerings
+                - Be specific about what the company actually provides
+                - Use consistent formatting for multiple products
+
+            11. Founders:
+                - Format as a comma-separated list of full names
+                - Ensure proper capitalization
+                - Include titles or roles if available
+
+            12. Founder LinkedIn Profiles:
+                - Ensure URLs are valid LinkedIn profile URLs
+                - Format consistently
+                - Match the order of founders when possible
+
+            13. CEO/Leadership:
+                - Format consistently with names and roles
+                - Ensure proper capitalization
+                - Structure as a list or object for multiple people
+
+            14. Team:
+                - Include key team members beyond founders/executives
+                - Format consistently with names and roles
+                - Provide team size information when available
+
+            15. Technology Stack:
+                - Format as a comma-separated list of technologies
+                - Use proper capitalization for technology names
+                - Group similar technologies together
+
+            16. Competitors:
+                - Format as a comma-separated list of company names
+                - Ensure proper capitalization
+                - Focus on direct competitors in the same space
+
+            17. Market Focus:
+                - Clearly describe target markets, customer segments, or geographical focus
+                - Be specific about industries or use cases served
+                - Format consistently across entries
+
+            18. Social Media Links:
+                - Ensure URLs are valid
+                - Format as an object with platform names as keys
+                - Include major platforms (LinkedIn, Twitter, Facebook, etc.)
+
+            19. Latest News:
+                - Include recent announcements, milestones, or news
+                - Format with dates when available
+                - Focus on significant developments
+
+            20. Investors:
+                - Format as a comma-separated list of investor names
+                - Include investment firms, VCs, angels, etc.
+                - Ensure proper capitalization
+
+            21. Growth Metrics:
+                - Include specific numbers when available
+                - Format consistently
+                - Include timeframes for growth metrics
+
+            22. Contact:
+                - Format consistently with type and value
+                - Include email, phone, or contact form URL
+                - Ensure proper formatting of email addresses and phone numbers
+
+            23. Source URL:
+                - Ensure it's a valid URL
+                - Verify it points to a relevant source
+
+            24. Fill in missing information where possible based on other fields or common knowledge about the company.
 
             Here's the data to validate and correct:
             {batch_json}
@@ -421,7 +512,17 @@ def generate_csv_from_startups(enriched_data: List[Dict[str, Any]], output_file:
         "Funding",
         "Product Description",
         "Products/Services",
+        "Founders",
+        "Founder LinkedIn Profiles",
+        "CEO/Leadership",
         "Team",
+        "Technology Stack",
+        "Competitors",
+        "Market Focus",
+        "Social Media Links",
+        "Latest News",
+        "Investors",
+        "Growth Metrics",
         "Contact",
         "Source URL"
     ]
