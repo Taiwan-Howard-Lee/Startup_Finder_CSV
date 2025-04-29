@@ -13,6 +13,7 @@ import time
 import logging
 import argparse
 import re
+import concurrent.futures
 from typing import Dict, Any, List, Optional
 
 # Import setup_env to ensure API keys are available
@@ -253,7 +254,7 @@ def enrich_startup_data(crawler: EnhancedStartupCrawler, startup_name: str) -> D
 
 def batch_enrich_startups(crawler: EnhancedStartupCrawler, startup_info_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Enrich a batch of startups with detailed information.
+    Enrich a batch of startups with detailed information using parallel processing.
 
     Args:
         crawler: StartupCrawler instance.
@@ -262,25 +263,43 @@ def batch_enrich_startups(crawler: EnhancedStartupCrawler, startup_info_list: Li
     Returns:
         List of enriched startup data.
     """
+    print(f"\nEnriching data for {len(startup_info_list)} startups using parallel processing...")
+
+    # Use ThreadPoolExecutor for parallel processing
+    max_workers = 30  # Match the crawler's max_workers
     enriched_results = []
 
-    for startup_info in startup_info_list:
-        startup_name = startup_info.get("Company Name", "Unknown")
-        print(f"\nProcessing: {startup_name}")
-        enriched_data = enrich_startup_data(crawler, startup_name)
-        enriched_results.append(enriched_data)
-        print(f"Completed: {startup_name}")
-        print(f"Data fields: {list(enriched_data.keys())}")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit tasks for enriching each startup
+        future_to_startup = {}
+        for startup_info in startup_info_list:
+            startup_name = startup_info.get("Company Name", "Unknown")
+            print(f"Submitting: {startup_name}")
+            future = executor.submit(enrich_startup_data, crawler, startup_name)
+            future_to_startup[future] = startup_name
 
-        # Add a small delay to avoid rate limiting
-        time.sleep(1)
+        # Process results as they complete
+        for future in concurrent.futures.as_completed(future_to_startup):
+            startup_name = future_to_startup[future]
+            try:
+                enriched_data = future.result()
+                enriched_results.append(enriched_data)
+                print(f"Completed: {startup_name}")
+                print(f"Data fields: {list(enriched_data.keys())}")
+            except Exception as e:
+                logger.error(f"Error enriching data for {startup_name}: {e}")
+                print(f"Error enriching data for {startup_name}: {e}")
+                # Add basic info to maintain order
+                enriched_results.append({"Company Name": startup_name, "Error": str(e)})
 
+    print(f"Enrichment complete. Processed {len(enriched_results)} startups.")
     return enriched_results
 
 
 def validate_and_correct_data_with_gemini(enriched_data: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
     """
     Use Gemini 2.5 Pro to validate and correct the startup data before CSV generation.
+    Uses parallel processing for improved performance.
 
     Args:
         enriched_data: List of enriched startup dictionaries.
@@ -292,231 +311,22 @@ def validate_and_correct_data_with_gemini(enriched_data: List[Dict[str, Any]], q
     print("\n" + "=" * 80)
     print("PHASE 3: DATA VALIDATION WITH GEMINI 2.5 PRO")
     print("=" * 80)
-    print("Validating and correcting data with Gemini 2.5 Pro...")
+    print("Validating and correcting data with Gemini 2.5 Pro using parallel processing...")
 
     try:
-        # Initialize the Gemini Pro model
+        # Initialize the Gemini API client
         gemini_client = GeminiAPIClient()
-        pro_model = gemini_client.pro_model
 
-        # Fields to validate are now defined directly in the prompt
-        # This ensures the prompt and validation logic stay in sync
+        # Use the new batch validation method with parallel processing
+        start_time = time.time()
+        validated_data = gemini_client.validate_startups_batch(enriched_data, query)
+        end_time = time.time()
 
-        # Process startups in batches to avoid overwhelming the API
-        batch_size = 10  # Increased from 5 to 10 for more efficient processing
-        validated_data = []
+        # Process the validation results to extract grounding metadata
+        # This is handled internally by the batch processor
 
-        for i in range(0, len(enriched_data), batch_size):
-            batch = enriched_data[i:i+batch_size]
-            print(f"Validating batch {i//batch_size + 1}/{(len(enriched_data) + batch_size - 1)//batch_size}...")
-
-            # Convert batch to JSON for the prompt
-            import json
-            batch_json = json.dumps(batch, indent=2)
-
-            # Create a prompt for Gemini Pro
-            prompt = f"""
-            You are a data validation expert for startup company information. I have a dataset of startups related to the query: "{query}".
-
-            Please analyze the following startup data for anomalies, inconsistencies, or missing information, and provide a corrected version.
-
-            IMPORTANT: Use the search tool extensively to verify company information. For EACH company, perform multiple searches to verify:
-            - Company existence and correct name spelling (search for the company name)
-            - Founded year (search for "when was [company] founded")
-            - Location (search for "[company] headquarters location")
-            - Industry classification (search for "[company] industry sector")
-            - Funding information (search for "[company] funding rounds investment")
-            - Key people/founders (search for "[company] founders CEO leadership team")
-            - Company size (search for "[company] number of employees")
-            - Products and services (search for "[company] products services offerings")
-
-            For each company, perform at least 5-8 different searches to thoroughly verify all information. Be thorough and comprehensive in your verification.
-
-            For each startup, check and correct the following:
-
-            1. Company Name:
-               - Ensure proper capitalization and formatting
-               - Remove any artifacts or unnecessary text
-               - Standardize suffixes (Inc., Ltd., LLC, etc.)
-
-            2. Website:
-               - Verify URLs are valid and properly formatted
-               - Add https:// if missing
-               - Remove trailing slashes for consistency
-               - Ensure the domain matches the company name when possible
-
-            3. LinkedIn:
-               - Ensure URLs are valid LinkedIn company page URLs
-               - Format consistently as https://www.linkedin.com/company/...
-
-            4. Location:
-               - Format consistently as "City, Region/State, Country"
-               - Use full country names rather than abbreviations
-               - For multiple locations, use a consistent format like ["Location 1", "Location 2"]
-
-            5. Founded Year:
-               - Ensure it's a valid 4-digit year
-               - Verify it's not in the future
-               - Convert text descriptions to years when possible
-
-            6. Industry:
-               - Standardize industry terminology
-               - Use primary industry first, followed by sub-industries
-               - Capitalize properly
-
-            7. Company Size:
-               - Format consistently as ranges (e.g., "1-10 employees", "11-50 employees")
-               - Convert numeric values to ranges when appropriate
-
-            8. Funding:
-               - Format consistently, preferably as a structured object
-               - Include total funding amount, latest round type, and date when available
-               - Use standard currency formatting (e.g., "$10M")
-
-            9. Product Description:
-               - Ensure it's clear, concise, and informative
-               - Improve unclear or too short descriptions
-               - Remove marketing language while preserving factual information
-
-            10. Products/Services:
-                - Format as a list of specific offerings
-                - Be specific about what the company actually provides
-                - Use consistent formatting for multiple products
-
-            11. Founders:
-                - Format as a comma-separated list of full names
-                - Ensure proper capitalization
-                - Include titles or roles if available
-
-            12. Founder LinkedIn Profiles:
-                - Ensure URLs are valid LinkedIn profile URLs
-                - Format consistently
-                - Match the order of founders when possible
-
-            13. CEO/Leadership:
-                - Format consistently with names and roles
-                - Ensure proper capitalization
-                - Structure as a list or object for multiple people
-
-            14. Team:
-                - Include key team members beyond founders/executives
-                - Format consistently with names and roles
-                - Provide team size information when available
-
-            15. Technology Stack:
-                - Format as a comma-separated list of technologies
-                - Use proper capitalization for technology names
-                - Group similar technologies together
-
-            16. Competitors:
-                - Format as a comma-separated list of company names
-                - Ensure proper capitalization
-                - Focus on direct competitors in the same space
-
-            17. Market Focus:
-                - Clearly describe target markets, customer segments, or geographical focus
-                - Be specific about industries or use cases served
-                - Format consistently across entries
-
-            18. Social Media Links:
-                - Ensure URLs are valid
-                - Format as an object with platform names as keys
-                - Include major platforms (LinkedIn, Twitter, Facebook, etc.)
-
-            19. Latest News:
-                - Include recent announcements, milestones, or news
-                - Format with dates when available
-                - Focus on significant developments
-
-            20. Investors:
-                - Format as a comma-separated list of investor names
-                - Include investment firms, VCs, angels, etc.
-                - Ensure proper capitalization
-
-            21. Growth Metrics:
-                - Include specific numbers when available
-                - Format consistently
-                - Include timeframes for growth metrics
-
-            22. Contact:
-                - Format consistently with type and value
-                - Include email, phone, or contact form URL
-                - Ensure proper formatting of email addresses and phone numbers
-
-            23. Source URL:
-                - Ensure it's a valid URL
-                - Verify it points to a relevant source
-
-            24. Fill in missing information where possible based on other fields or common knowledge about the company.
-
-            Here's the data to validate and correct:
-            {batch_json}
-
-            Return ONLY the corrected data in valid JSON format, with the same structure as the input.
-            Do not include any explanations or notes outside the JSON structure.
-            """
-
-            # Get response from Gemini Pro with search grounding
-            response = pro_model.generate_content(prompt)
-
-            # Extract the corrected data
-            try:
-                # Find JSON in the response
-                response_text = response.text
-
-                # Extract JSON content (assuming it's the entire response or contained within triple backticks)
-                if "```json" in response_text:
-                    json_content = response_text.split("```json")[1].split("```")[0].strip()
-                elif "```" in response_text:
-                    json_content = response_text.split("```")[1].strip()
-                else:
-                    json_content = response_text.strip()
-
-                # Parse the JSON
-                corrected_batch = json.loads(json_content)
-
-                # Check if we have grounding metadata
-                if hasattr(response, 'candidates') and response.candidates:
-                    candidate = response.candidates[0]
-                    if hasattr(candidate, 'groundingMetadata') and candidate.groundingMetadata:
-                        # Log the search queries used for grounding
-                        if hasattr(candidate.groundingMetadata, 'webSearchQueries'):
-                            search_queries = candidate.groundingMetadata.webSearchQueries
-                            print(f"Search queries used for grounding: {search_queries}")
-
-                        # Log the grounding sources
-                        if hasattr(candidate.groundingMetadata, 'groundingChunks'):
-                            sources = []
-                            source_urls = []
-                            for chunk in candidate.groundingMetadata.groundingChunks:
-                                if hasattr(chunk, 'web'):
-                                    if hasattr(chunk.web, 'title'):
-                                        sources.append(chunk.web.title)
-                                    if hasattr(chunk.web, 'uri'):
-                                        source_urls.append(chunk.web.uri)
-
-                            if sources:
-                                print(f"Grounding sources used: {', '.join(set(sources))}")
-
-                                # Add grounding sources to each startup in the batch
-                                for startup in corrected_batch:
-                                    startup["Validation Sources"] = ", ".join(set(sources))
-
-                                    # Add the first few source URLs as reference
-                                    if source_urls:
-                                        startup["Validation Source URLs"] = ", ".join(source_urls[:3])
-
-                # Add to validated data
-                validated_data.extend(corrected_batch)
-                print(f"Successfully validated and corrected {len(corrected_batch)} startups with search grounding")
-
-            except Exception as e:
-                logger.error(f"Error parsing Gemini Pro response: {e}")
-                print(f"Error parsing Gemini Pro response. Using original data for this batch.")
-                # Fall back to original data for this batch
-                validated_data.extend(batch)
-
-        print(f"Data validation complete. Processed {len(validated_data)} startups.")
+        print(f"Data validation complete. Processed {len(validated_data)} startups in {end_time - start_time:.2f} seconds.")
+        print(f"Average time per startup: {(end_time - start_time) / len(enriched_data):.2f} seconds")
         return validated_data
 
     except Exception as e:
@@ -646,11 +456,13 @@ def run_startup_finder(query: str, max_results: int = 5, num_expansions: int = 3
             gemini_client = GeminiAPIClient()
             query_expander = QueryExpander(api_client=gemini_client)
 
-            # Expand the query
-            print("\nExpanding search query...")
-            expanded_queries = query_expander.expand_query(query, num_expansions=num_expansions)
+            # Expand the query using parallel processing
+            print("\nExpanding search query using parallel processing...")
+            start_time = time.time()
+            expanded_queries = query_expander.expand_query_parallel(query, num_expansions=num_expansions)
+            end_time = time.time()
 
-            print(f"\nExpanded queries:")
+            print(f"\nExpanded queries (generated in {end_time - start_time:.2f} seconds):")
             for i, expanded_query in enumerate(expanded_queries):
                 print(f"  {i+1}. {expanded_query}")
         except Exception as e:

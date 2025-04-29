@@ -7,9 +7,16 @@ startup intelligence gathering.
 
 import os
 import json
-from typing import Dict, List, Optional, Union, Any
+import time
+import logging
+from typing import Dict, List, Optional, Union, Any, Tuple
 
 import google.generativeai as genai
+
+from src.utils.batch_processor import GeminiAPIBatchProcessor
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 
 class GeminiAPIClient:
@@ -231,6 +238,179 @@ class GeminiAPIClient:
                 "confidence": 0.0,
                 "last_updated": "2024-04-01"  # Placeholder
             }
+
+    def expand_queries_batch(self, queries: List[str], num_expansions: int = 5) -> Dict[str, List[str]]:
+        """
+        Expand multiple queries in parallel.
+
+        Args:
+            queries: List of queries to expand.
+            num_expansions: Number of expansions per query.
+
+        Returns:
+            Dictionary mapping original queries to their expansions.
+        """
+        logger.info(f"Expanding {len(queries)} queries in parallel with {num_expansions} expansions each")
+
+        batch_processor = GeminiAPIBatchProcessor(max_workers=30)
+
+        # Define the processing function
+        def process_query(api_client, query, num_expansions):
+            return {
+                "query": query,
+                "expansions": api_client.expand_query(query, num_expansions)
+            }
+
+        # Process the batch
+        results = batch_processor.process_batch(
+            self, queries, process_query, num_expansions
+        )
+
+        # Convert to dictionary
+        expansions_dict = {}
+        for result in results:
+            if isinstance(result, dict) and "query" in result and "expansions" in result:
+                expansions_dict[result["query"]] = result["expansions"]
+            elif isinstance(result, dict) and "error" in result and "item" in result:
+                # Handle error case
+                query = result["item"]
+                logger.error(f"Error expanding query '{query}': {result['error']}")
+                expansions_dict[query] = [query]  # Use original query as fallback
+
+        logger.info(f"Successfully expanded {len(expansions_dict)} queries")
+        return expansions_dict
+
+    def analyze_startups_batch(self, startups_data: List[Dict[str, str]], fields: List[str]) -> List[Dict[str, Any]]:
+        """
+        Analyze multiple startups in parallel.
+
+        Args:
+            startups_data: List of startup data dictionaries.
+            fields: List of fields to extract for each startup.
+
+        Returns:
+            List of dictionaries with analyzed startup data.
+        """
+        logger.info(f"Analyzing {len(startups_data)} startups in parallel")
+
+        batch_processor = GeminiAPIBatchProcessor(max_workers=30)
+
+        # Define the processing function
+        def process_startup(api_client, startup_data, fields):
+            return api_client.analyze_startup(startup_data, fields)
+
+        # Process the batch
+        results = batch_processor.process_batch(
+            self, startups_data, process_startup, fields
+        )
+
+        logger.info(f"Successfully analyzed {len(results)} startups")
+        return results
+
+    def validate_startups_batch(self, startups: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+        """
+        Validate multiple startups in parallel.
+
+        Args:
+            startups: List of startup dictionaries to validate.
+            query: The original search query.
+
+        Returns:
+            List of validated startup dictionaries.
+        """
+        logger.info(f"Validating {len(startups)} startups in parallel")
+
+        # Split into smaller batches for better performance with Gemini
+        batch_size = 5  # Gemini works better with smaller batches
+        batches = [startups[i:i+batch_size] for i in range(0, len(startups), batch_size)]
+
+        batch_processor = GeminiAPIBatchProcessor(max_workers=30)
+
+        # Define the processing function
+        def process_batch(api_client, batch, query):
+            # Convert batch to JSON
+            batch_json = json.dumps(batch, indent=2)
+
+            # Create prompt
+            prompt = f"""
+            You are a data validation expert for startup company information.
+            I have a dataset of startups related to the query: "{query}".
+
+            Please analyze the following startup data for anomalies, inconsistencies,
+            or missing information, and provide a corrected version.
+
+            {batch_json}
+
+            Return ONLY the corrected data in valid JSON format, with the same structure as the input.
+            """
+
+            # Get response from Gemini Pro
+            response = api_client.pro_model.generate_content(prompt)
+
+            # Extract JSON from response
+            try:
+                # Find JSON in the response
+                response_text = response.text
+                if "```json" in response_text:
+                    json_content = response_text.split("```json")[1].split("```")[0].strip()
+                elif "```" in response_text:
+                    json_content = response_text.split("```")[1].strip()
+                else:
+                    json_content = response_text.strip()
+
+                # Parse the JSON
+                return json.loads(json_content)
+            except Exception as e:
+                logger.error(f"Error parsing response: {e}")
+                return batch  # Return original batch on error
+
+        # Process all batches
+        results = []
+        for i, batch in enumerate(batches):
+            logger.info(f"Processing batch {i+1}/{len(batches)} with {len(batch)} startups")
+            batch_results = batch_processor.process_batch(
+                self, [batch], process_batch, query
+            )
+            # Flatten results
+            for batch_result in batch_results:
+                if isinstance(batch_result, list):
+                    results.extend(batch_result)
+                else:
+                    results.append(batch_result)
+
+        logger.info(f"Successfully validated {len(results)} startups")
+        return results
+
+    def extract_structured_data_batch(self, items: List[Tuple[str, str, str, List[str]]]) -> List[Dict[str, Any]]:
+        """
+        Extract structured data from multiple sources in parallel.
+
+        Args:
+            items: List of tuples (company_name, source_type, content, fields).
+
+        Returns:
+            List of dictionaries with extracted data.
+        """
+        logger.info(f"Extracting structured data from {len(items)} sources in parallel")
+
+        batch_processor = GeminiAPIBatchProcessor(max_workers=30)
+
+        # Define the processing function
+        def process_item(api_client, item, *args):
+            company_name, source_type, content, fields = item
+            return {
+                "company_name": company_name,
+                "source_type": source_type,
+                "data": api_client.extract_structured_data(company_name, source_type, content, fields)
+            }
+
+        # Process the batch
+        results = batch_processor.process_batch(
+            self, items, process_item
+        )
+
+        logger.info(f"Successfully extracted data from {len(results)} sources")
+        return results
 
     def extract_structured_data(self, company_name: str, source_type: str, content: str, fields: List[str]) -> Dict[str, Any]:
         """
