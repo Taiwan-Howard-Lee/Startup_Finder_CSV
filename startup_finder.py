@@ -13,6 +13,7 @@ import time
 import logging
 import argparse
 import re
+import traceback
 import concurrent.futures
 from typing import Dict, Any, List, Optional
 
@@ -27,15 +28,15 @@ from src.collector.query_expander import QueryExpander
 from src.utils.api_client import GeminiAPIClient
 # Google Drive functionality removed
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("startup_finder.log")
-    ]
-)
+# Import logging configuration
+from src.utils.logging_config import configure_logging
+
+# Configure logging with a file in the logs directory
+os.makedirs("logs", exist_ok=True)
+log_file = os.path.join("logs", f"startup_finder_{time.strftime('%Y%m%d')}.log")
+configure_logging(log_level="INFO", log_file=log_file)
+
+# Get logger for this module
 logger = logging.getLogger(__name__)
 
 # Create data directory if it doesn't exist
@@ -54,9 +55,9 @@ def load_env_from_file():
                 key, value = line.split("=", 1)
                 os.environ[key] = value
 
-        print(f"Loaded API keys from .env file")
+        logger.info("Loaded API keys from .env file")
     except Exception as e:
-        print(f"Error loading environment variables: {e}")
+        logger.error(f"Error loading environment variables: {e}")
 
 
 def enrich_startup_data(crawler: EnhancedStartupCrawler, startup_name: str) -> Dict[str, Any]:
@@ -263,7 +264,7 @@ def batch_enrich_startups(crawler: EnhancedStartupCrawler, startup_info_list: Li
     Returns:
         List of enriched startup data.
     """
-    print(f"\nEnriching data for {len(startup_info_list)} startups using parallel processing...")
+    logger.info(f"Enriching data for {len(startup_info_list)} startups using parallel processing")
 
     # Use ThreadPoolExecutor for parallel processing
     max_workers = 30  # Match the crawler's max_workers
@@ -274,7 +275,7 @@ def batch_enrich_startups(crawler: EnhancedStartupCrawler, startup_info_list: Li
         future_to_startup = {}
         for startup_info in startup_info_list:
             startup_name = startup_info.get("Company Name", "Unknown")
-            print(f"Submitting: {startup_name}")
+            logger.info(f"Submitting: {startup_name}")
             future = executor.submit(enrich_startup_data, crawler, startup_name)
             future_to_startup[future] = startup_name
 
@@ -284,15 +285,14 @@ def batch_enrich_startups(crawler: EnhancedStartupCrawler, startup_info_list: Li
             try:
                 enriched_data = future.result()
                 enriched_results.append(enriched_data)
-                print(f"Completed: {startup_name}")
-                print(f"Data fields: {list(enriched_data.keys())}")
+                logger.info(f"Completed: {startup_name}")
+                logger.debug(f"Data fields: {list(enriched_data.keys())}")
             except Exception as e:
                 logger.error(f"Error enriching data for {startup_name}: {e}")
-                print(f"Error enriching data for {startup_name}: {e}")
                 # Add basic info to maintain order
                 enriched_results.append({"Company Name": startup_name, "Error": str(e)})
 
-    print(f"Enrichment complete. Processed {len(enriched_results)} startups.")
+    logger.info(f"Enrichment complete. Processed {len(enriched_results)} startups")
     return enriched_results
 
 
@@ -308,10 +308,8 @@ def validate_and_correct_data_with_gemini(enriched_data: List[Dict[str, Any]], q
     Returns:
         List of validated and corrected startup data dictionaries.
     """
-    print("\n" + "=" * 80)
-    print("PHASE 3: DATA VALIDATION WITH GEMINI 2.5 PRO")
-    print("=" * 80)
-    print("Validating and correcting data with Gemini 2.5 Pro using parallel processing...")
+    logger.info("PHASE 3: DATA VALIDATION WITH GEMINI 2.5 PRO")
+    logger.info("Validating and correcting data with Gemini 2.5 Pro using parallel processing")
 
     try:
         # Initialize the Gemini API client
@@ -325,14 +323,18 @@ def validate_and_correct_data_with_gemini(enriched_data: List[Dict[str, Any]], q
         # Process the validation results to extract grounding metadata
         # This is handled internally by the batch processor
 
-        print(f"Data validation complete. Processed {len(validated_data)} startups in {end_time - start_time:.2f} seconds.")
-        print(f"Average time per startup: {(end_time - start_time) / len(enriched_data):.2f} seconds")
+        processing_time = end_time - start_time
+        avg_time_per_startup = processing_time / len(enriched_data) if enriched_data else 0
+
+        logger.info(f"Data validation complete. Processed {len(validated_data)} startups in {processing_time:.2f} seconds")
+        logger.info(f"Average time per startup: {avg_time_per_startup:.2f} seconds")
         return validated_data
 
     except Exception as e:
+        error_traceback = traceback.format_exc()
         logger.error(f"Error validating data with Gemini Pro: {e}")
-        print(f"Error validating data with Gemini Pro: {e}")
-        print("Proceeding with original data.")
+        logger.debug(f"Error traceback: {error_traceback}")
+        logger.warning("Proceeding with original data due to validation error")
         return enriched_data
 
 
@@ -400,10 +402,12 @@ def generate_csv_from_startups(enriched_data: List[Dict[str, Any]], output_file:
                         row[field] = startup.get(field, "")
                 writer.writerow(row)
 
-        print(f"CSV file generated: {output_file}")
+        logger.info(f"CSV file generated: {output_file}")
         return True
     except Exception as e:
-        print(f"Error generating CSV file: {e}")
+        error_traceback = traceback.format_exc()
+        logger.error(f"Error generating CSV file: {e}")
+        logger.debug(f"Error traceback: {error_traceback}")
         return False
 
 

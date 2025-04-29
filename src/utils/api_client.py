@@ -2,14 +2,16 @@
 Gemini API Client for Startup Intelligence Finder.
 
 This module provides a wrapper around Google's Gemini API for AI-powered
-startup intelligence gathering.
+startup intelligence gathering with robust validation and error handling.
 """
 
 import os
 import json
 import time
 import logging
-from typing import Dict, List, Optional, Union, Any, Tuple
+import re
+import traceback
+from typing import Dict, List, Optional, Union, Any, Tuple, Set
 
 import google.generativeai as genai
 
@@ -18,6 +20,10 @@ from src.utils.batch_processor import GeminiAPIBatchProcessor
 # Set up logging
 logger = logging.getLogger(__name__)
 
+# Define response validation constants
+VALID_JSON_PATTERN = r'^\s*(\{|\[).*(\}|\])\s*$'
+MAX_CONTENT_LENGTH = 15000  # Maximum content length for Gemini API
+
 
 class GeminiAPIClient:
     """
@@ -25,6 +31,7 @@ class GeminiAPIClient:
 
     This class handles authentication, request formatting, and response parsing
     for the Gemini API, which is used for query expansion and data analysis.
+    Includes robust validation and error handling for API responses.
     """
 
     def __init__(self, api_key: Optional[str] = None):
@@ -83,6 +90,154 @@ class GeminiAPIClient:
                 "description": "Search the web for information."
             }]
         )      # For deep thinking with search grounding
+
+        # Set up response validation parameters
+        self.expected_field_types = {
+            "Company Name": str,
+            "Website": str,
+            "LinkedIn": str,
+            "Location": str,
+            "Founded Year": (str, int),
+            "Industry": str,
+            "Company Size": str,
+            "Funding": (str, dict),
+            "Company Description": str,
+            "Products/Services": (str, list),
+            "Founders": (str, list),
+            "Founder LinkedIn Profiles": (str, list),
+            "CEO/Leadership": (str, dict, list),
+            "Team": (str, dict, list),
+            "Technology Stack": (str, list),
+            "Competitors": (str, list),
+            "Market Focus": str,
+            "Social Media Links": (str, dict),
+            "Latest News": str,
+            "Investors": (str, list),
+            "Growth Metrics": (str, dict),
+            "Contact": (str, dict)
+        }
+
+    def _validate_response(self, response_text: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
+        """
+        Validate and parse a response from the Gemini API.
+
+        Args:
+            response_text: The raw text response from the API.
+
+        Returns:
+            Tuple containing:
+            - Boolean indicating if the response is valid
+            - Parsed data (if valid) or None (if invalid)
+            - Error message (if invalid) or None (if valid)
+        """
+        if not response_text or not response_text.strip():
+            return False, None, "Empty response from API"
+
+        # Extract JSON content if wrapped in code blocks
+        json_content = response_text.strip()
+
+        # Handle markdown code blocks
+        if "```json" in json_content:
+            try:
+                json_content = json_content.split("```json")[1].split("```")[0].strip()
+            except IndexError:
+                return False, None, "Malformed JSON code block in response"
+        elif "```" in json_content:
+            try:
+                json_content = json_content.split("```")[1].strip()
+            except IndexError:
+                return False, None, "Malformed code block in response"
+
+        # Check if the content looks like JSON
+        if not re.match(VALID_JSON_PATTERN, json_content):
+            return False, None, f"Response does not appear to be valid JSON: {json_content[:100]}..."
+
+        # Try to parse the JSON
+        try:
+            parsed_data = json.loads(json_content)
+
+            # Validate the structure based on expected type
+            if isinstance(parsed_data, dict):
+                return True, parsed_data, None
+            elif isinstance(parsed_data, list):
+                # For list responses, check if all items are dictionaries
+                if all(isinstance(item, dict) for item in parsed_data):
+                    return True, parsed_data, None
+                else:
+                    return False, None, "List response contains non-dictionary items"
+            else:
+                return False, None, f"Unexpected response type: {type(parsed_data)}"
+
+        except json.JSONDecodeError as e:
+            return False, None, f"JSON parsing error: {str(e)}"
+
+    def _validate_fields(self, data: Dict[str, Any], required_fields: Optional[List[str]] = None) -> Tuple[bool, Dict[str, Any], List[str]]:
+        """
+        Validate the fields in the parsed data against expected types.
+
+        Args:
+            data: The parsed data dictionary.
+            required_fields: List of fields that must be present (optional).
+
+        Returns:
+            Tuple containing:
+            - Boolean indicating if the data is valid
+            - Cleaned data with validated fields
+            - List of validation warnings
+        """
+        warnings = []
+        cleaned_data = {}
+
+        # Check for required fields
+        if required_fields:
+            missing_fields = [field for field in required_fields if field not in data]
+            if missing_fields:
+                warnings.append(f"Missing required fields: {', '.join(missing_fields)}")
+
+        # Validate each field against expected types
+        for field, value in data.items():
+            # Skip null values
+            if value is None:
+                continue
+
+            # Check if this is a known field
+            if field in self.expected_field_types:
+                expected_types = self.expected_field_types[field]
+                if not isinstance(expected_types, tuple):
+                    expected_types = (expected_types,)
+
+                # Check if the value matches any of the expected types
+                if not any(isinstance(value, t) for t in expected_types):
+                    warnings.append(f"Field '{field}' has unexpected type: {type(value).__name__}, expected {expected_types}")
+
+                    # Try to convert to the first expected type
+                    try:
+                        if str in expected_types and not isinstance(value, str):
+                            # Convert to string
+                            cleaned_data[field] = str(value)
+                        elif list in expected_types and isinstance(value, str):
+                            # Convert comma-separated string to list
+                            cleaned_data[field] = [item.strip() for item in value.split(",")]
+                        elif dict in expected_types and isinstance(value, str):
+                            # Try to parse string as JSON
+                            try:
+                                cleaned_data[field] = json.loads(value)
+                            except json.JSONDecodeError:
+                                cleaned_data[field] = value
+                        else:
+                            # Keep original value
+                            cleaned_data[field] = value
+                    except Exception as e:
+                        warnings.append(f"Error converting field '{field}': {str(e)}")
+                        cleaned_data[field] = value
+                else:
+                    # Value has correct type
+                    cleaned_data[field] = value
+            else:
+                # Unknown field, keep as is
+                cleaned_data[field] = value
+
+        return len(warnings) == 0, cleaned_data, warnings
 
     def expand_query(self, query: str, num_expansions: int = 5) -> List[str]:
         """
@@ -396,7 +551,7 @@ class GeminiAPIClient:
         batch_processor = GeminiAPIBatchProcessor(max_workers=30)
 
         # Define the processing function
-        def process_item(api_client, item, *args):
+        def process_item(api_client, item):
             company_name, source_type, content, fields = item
             return {
                 "company_name": company_name,
@@ -415,6 +570,7 @@ class GeminiAPIClient:
     def extract_structured_data(self, company_name: str, source_type: str, content: str, fields: List[str]) -> Dict[str, Any]:
         """
         Extract structured data from HTML or text content using Gemini AI.
+        Includes robust validation and error handling.
 
         Args:
             company_name: Name of the company.
@@ -426,9 +582,9 @@ class GeminiAPIClient:
             Dictionary with extracted fields.
         """
         # Truncate content if it's too long (Gemini has token limits)
-        max_content_length = 15000  # Adjust based on model limits
-        if len(content) > max_content_length:
-            content = content[:max_content_length] + "..."
+        if len(content) > MAX_CONTENT_LENGTH:
+            logger.info(f"Truncating content for {company_name} from {len(content)} to {MAX_CONTENT_LENGTH} characters")
+            content = content[:MAX_CONTENT_LENGTH] + "..."
 
         # Create a more detailed prompt for Gemini with specific instructions for each field
         fields_str = ", ".join(fields)
@@ -488,31 +644,109 @@ class GeminiAPIClient:
 
         try:
             # Use the flash model for simpler extraction tasks
+            logger.debug(f"Sending extraction request to Gemini for {company_name} from {source_type}")
             response = self.flash_model.generate_content(prompt)
 
-            # Try to parse the response as JSON
-            try:
-                # Extract JSON from the response
-                response_text = response.text.strip()
+            if not response or not response.text:
+                logger.error(f"Empty response from Gemini for {company_name}")
+                return {"error": "Empty response from API"}
 
-                # If the response is wrapped in ```json and ```, extract just the JSON part
-                if response_text.startswith("```json") and response_text.endswith("```"):
-                    response_text = response_text[7:-3].strip()
-                elif response_text.startswith("```") and response_text.endswith("```"):
-                    response_text = response_text[3:-3].strip()
+            # Validate and parse the response
+            is_valid, parsed_data, error_message = self._validate_response(response.text)
 
-                parsed_data = json.loads(response_text)
+            if not is_valid or not parsed_data:
+                logger.error(f"Invalid response from Gemini for {company_name}: {error_message}")
+                # Try a simpler prompt as fallback
+                return self._extract_with_fallback(company_name, source_type, content, fields)
 
-                # Filter out null values
-                filtered_data = {k: v for k, v in parsed_data.items() if v is not None and v != "null" and v != "Not available"}
+            # Validate the fields
+            fields_valid, cleaned_data, warnings = self._validate_fields(parsed_data, fields)
 
-                return filtered_data
+            if warnings:
+                for warning in warnings:
+                    logger.warning(f"Validation warning for {company_name}: {warning}")
 
-            except json.JSONDecodeError:
-                # If we can't parse as JSON, try to extract structured data manually
-                print(f"Error parsing JSON from Gemini response for {company_name} {source_type}")
-                return {}
+            # Filter out null values and standardize "not available" values
+            filtered_data = {}
+            for k, v in cleaned_data.items():
+                if v is None or v == "null" or v == "Not available" or v == "":
+                    continue
+
+                # For lists, filter out empty items
+                if isinstance(v, list) and not any(item for item in v if item):
+                    continue
+
+                # For dicts, filter out empty dicts
+                if isinstance(v, dict) and not v:
+                    continue
+
+                filtered_data[k] = v
+
+            logger.info(f"Successfully extracted {len(filtered_data)} fields for {company_name} from {source_type}")
+            return filtered_data
 
         except Exception as e:
-            print(f"Error extracting data from {source_type} for {company_name}: {e}")
-            return {}
+            error_traceback = traceback.format_exc()
+            logger.error(f"Error extracting data from {source_type} for {company_name}: {e}")
+            logger.debug(f"Error traceback: {error_traceback}")
+
+            # Try fallback extraction
+            return self._extract_with_fallback(company_name, source_type, content, fields)
+
+    def _extract_with_fallback(self, company_name: str, source_type: str, content: str, fields: List[str]) -> Dict[str, Any]:
+        """
+        Fallback method for extracting data when the primary method fails.
+        Uses a simpler prompt and more robust error handling.
+
+        Args:
+            company_name: Name of the company.
+            source_type: Type of source.
+            content: Content to analyze.
+            fields: Fields to extract.
+
+        Returns:
+            Dictionary with extracted fields.
+        """
+        logger.info(f"Attempting fallback extraction for {company_name} from {source_type}")
+
+        try:
+            # Create a simpler prompt
+            fields_str = ", ".join(fields)
+            simple_prompt = f"""
+            Extract information about {company_name} from this content.
+            Focus on these fields: {fields_str}.
+
+            Return a simple JSON object with the fields as keys.
+            If information is not available, use null.
+
+            Content (excerpt):
+            {content[:5000]}
+            """
+
+            # Try with the flash model again
+            response = self.flash_model.generate_content(simple_prompt)
+
+            if not response or not response.text:
+                logger.error(f"Empty response from fallback extraction for {company_name}")
+                return {"error": "Empty response from fallback API call"}
+
+            # Try to parse the response
+            is_valid, parsed_data, error_message = self._validate_response(response.text)
+
+            if not is_valid or not parsed_data:
+                logger.error(f"Invalid response from fallback extraction for {company_name}: {error_message}")
+                # Return minimal data with company name
+                return {"Company Name": company_name, "error": error_message}
+
+            # Filter out null values
+            filtered_data = {k: v for k, v in parsed_data.items() if v is not None and v != "null" and v != "Not available" and v != ""}
+
+            if not filtered_data and "Company Name" not in filtered_data:
+                filtered_data["Company Name"] = company_name
+
+            logger.info(f"Fallback extraction retrieved {len(filtered_data)} fields for {company_name}")
+            return filtered_data
+
+        except Exception as e:
+            logger.error(f"Fallback extraction failed for {company_name}: {e}")
+            return {"Company Name": company_name, "error": str(e)}
