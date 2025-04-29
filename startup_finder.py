@@ -320,6 +320,16 @@ def validate_and_correct_data_with_gemini(enriched_data: List[Dict[str, Any]], q
 
             Please analyze the following startup data for anomalies, inconsistencies, or missing information, and provide a corrected version.
 
+            IMPORTANT: Use the search tool to verify company information when possible, especially for:
+            - Company existence and correct name spelling
+            - Founded year
+            - Location
+            - Industry classification
+            - Funding information
+            - Key people/founders
+
+            For each company, search for its name plus relevant keywords to verify the information.
+
             For each startup, check and correct the following:
 
             1. Company Name:
@@ -444,7 +454,7 @@ def validate_and_correct_data_with_gemini(enriched_data: List[Dict[str, Any]], q
             Do not include any explanations or notes outside the JSON structure.
             """
 
-            # Get response from Gemini Pro
+            # Get response from Gemini Pro with search grounding
             response = pro_model.generate_content(prompt)
 
             # Extract the corrected data
@@ -463,9 +473,40 @@ def validate_and_correct_data_with_gemini(enriched_data: List[Dict[str, Any]], q
                 # Parse the JSON
                 corrected_batch = json.loads(json_content)
 
+                # Check if we have grounding metadata
+                if hasattr(response, 'candidates') and response.candidates:
+                    candidate = response.candidates[0]
+                    if hasattr(candidate, 'groundingMetadata') and candidate.groundingMetadata:
+                        # Log the search queries used for grounding
+                        if hasattr(candidate.groundingMetadata, 'webSearchQueries'):
+                            search_queries = candidate.groundingMetadata.webSearchQueries
+                            print(f"Search queries used for grounding: {search_queries}")
+
+                        # Log the grounding sources
+                        if hasattr(candidate.groundingMetadata, 'groundingChunks'):
+                            sources = []
+                            source_urls = []
+                            for chunk in candidate.groundingMetadata.groundingChunks:
+                                if hasattr(chunk, 'web'):
+                                    if hasattr(chunk.web, 'title'):
+                                        sources.append(chunk.web.title)
+                                    if hasattr(chunk.web, 'uri'):
+                                        source_urls.append(chunk.web.uri)
+
+                            if sources:
+                                print(f"Grounding sources used: {', '.join(set(sources))}")
+
+                                # Add grounding sources to each startup in the batch
+                                for startup in corrected_batch:
+                                    startup["Validation Sources"] = ", ".join(set(sources))
+
+                                    # Add the first few source URLs as reference
+                                    if source_urls:
+                                        startup["Validation Source URLs"] = ", ".join(source_urls[:3])
+
                 # Add to validated data
                 validated_data.extend(corrected_batch)
-                print(f"Successfully validated and corrected {len(corrected_batch)} startups")
+                print(f"Successfully validated and corrected {len(corrected_batch)} startups with search grounding")
 
             except Exception as e:
                 logger.error(f"Error parsing Gemini Pro response: {e}")

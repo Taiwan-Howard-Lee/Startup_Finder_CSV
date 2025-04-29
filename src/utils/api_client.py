@@ -67,7 +67,15 @@ class GeminiAPIClient:
 
         # Use the specified models
         self.flash_model = genai.GenerativeModel('gemini-2.5-flash-preview-04-17')  # For quick responses
-        self.pro_model = genai.GenerativeModel('gemini-2.5-pro-preview-03-25')      # For deep thinking
+
+        # Initialize the Pro model with Search as a tool for grounding
+        self.pro_model = genai.GenerativeModel(
+            'gemini-2.5-pro-preview-03-25',
+            tools=[{
+                "name": "search",
+                "description": "Search the web for information."
+            }]
+        )      # For deep thinking with search grounding
 
     def expand_query(self, query: str, num_expansions: int = 5) -> List[str]:
         """
