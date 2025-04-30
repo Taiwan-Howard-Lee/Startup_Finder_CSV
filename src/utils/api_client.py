@@ -14,6 +14,7 @@ import traceback
 from typing import Dict, List, Optional, Union, Any, Tuple, Set
 
 import google.generativeai as genai
+from google.generativeai import types
 
 from src.utils.batch_processor import GeminiAPIBatchProcessor
 
@@ -21,7 +22,6 @@ from src.utils.batch_processor import GeminiAPIBatchProcessor
 logger = logging.getLogger(__name__)
 
 # Define response validation constants
-VALID_JSON_PATTERN = r'^\s*(\{|\[).*(\}|\])\s*$'
 MAX_CONTENT_LENGTH = 15000  # Maximum content length for Gemini API
 
 
@@ -83,6 +83,7 @@ class GeminiAPIClient:
         self.flash_model = genai.GenerativeModel('gemini-2.5-flash-preview-04-17')  # For quick responses
 
         # Initialize the Pro model with Search as a tool for grounding
+        # Using the format for search grounding
         self.pro_model = genai.GenerativeModel(
             'gemini-2.5-pro-preview-03-25',
             tools=[{
@@ -148,11 +149,8 @@ class GeminiAPIClient:
             except IndexError:
                 return False, None, "Malformed code block in response"
 
-        # Check if the content looks like JSON
-        if not re.match(VALID_JSON_PATTERN, json_content):
-            return False, None, f"Response does not appear to be valid JSON: {json_content[:100]}..."
-
-        # Try to parse the JSON
+        # Try to parse the JSON directly without regex validation
+        # This is more lenient and will handle valid JSON that doesn't match the regex pattern
         try:
             parsed_data = json.loads(json_content)
 
@@ -169,6 +167,31 @@ class GeminiAPIClient:
                 return False, None, f"Unexpected response type: {type(parsed_data)}"
 
         except json.JSONDecodeError as e:
+            # If JSON parsing fails, log the error and the content for debugging
+            logger.debug(f"JSON parsing error: {str(e)}")
+            logger.debug(f"JSON content: {json_content[:500]}...")
+
+            # Try to clean the content and parse again
+            try:
+                # Sometimes Gemini adds extra text before or after the JSON
+                # Try to find JSON-like content using a more relaxed approach
+                if json_content.find('{') >= 0 and json_content.rfind('}') >= 0:
+                    start = json_content.find('{')
+                    end = json_content.rfind('}') + 1
+                    cleaned_json = json_content[start:end]
+                    parsed_data = json.loads(cleaned_json)
+                    logger.info("Successfully parsed JSON after cleaning")
+                    return True, parsed_data, None
+                elif json_content.find('[') >= 0 and json_content.rfind(']') >= 0:
+                    start = json_content.find('[')
+                    end = json_content.rfind(']') + 1
+                    cleaned_json = json_content[start:end]
+                    parsed_data = json.loads(cleaned_json)
+                    logger.info("Successfully parsed JSON array after cleaning")
+                    return True, parsed_data, None
+            except json.JSONDecodeError:
+                pass
+
             return False, None, f"JSON parsing error: {str(e)}"
 
     def _validate_fields(self, data: Dict[str, Any], required_fields: Optional[List[str]] = None) -> Tuple[bool, Dict[str, Any], List[str]]:
@@ -353,7 +376,10 @@ class GeminiAPIClient:
         """
 
         try:
-            # Use the pro model for deeper analysis
+            # Use the pro model with search grounding for deeper analysis
+            # Note: Search grounding is configured when the model is initialized
+
+            # Generate content with search grounding
             response = self.pro_model.generate_content(prompt)
 
             # Try to parse the response as JSON
@@ -488,18 +514,43 @@ class GeminiAPIClient:
 
             # Create prompt
             prompt = f"""
-            You are a data validation expert for startup company information.
-            I have a dataset of startups related to the query: "{query}".
+            You are a startup intelligence analyst specializing in data validation and enrichment.
+            I have a dataset of startups related to the search query: "{query}".
 
-            Please analyze the following startup data for anomalies, inconsistencies,
-            or missing information, and provide a corrected version.
+            TASK:
+            Analyze the following startup data to:
+            1. VERIFY each startup is RELEVANT to the query
+            2. CORRECT any anomalies, inconsistencies, or inaccuracies
+            3. FILL IN missing information where possible
+            4. STANDARDIZE formatting across all entries
+            5. REMOVE any startups that are not relevant to the query
 
+            STARTUP RELEVANCE CRITERIA:
+            - The startup's core business, products, or services must directly relate to query
+            - The startup should be operating in the industry or solving problems mentioned in the query
+            - The startup should be targeting the market or audience implied by the query
+
+            DATA VALIDATION GUIDELINES:
+            - Company Name: Ensure correct spelling and proper capitalization
+            - Website: Verify it's the official company website (not social media or third-party sites)
+            - LinkedIn: Ensure it's the correct company LinkedIn page
+            - Location: Standardize format (City, State/Region, Country)
+            - Founded Year: Verify accuracy and use 4-digit year format
+            - Industry: Use specific, standardized industry categories
+            - Company Size: Standardize format (e.g., "11-50 employees")
+            - Funding: Include latest round, amount, and date if available
+            - Product Description: Ensure it accurately describes what the company does
+
+            DATA TO VALIDATE:
             {batch_json}
 
-            Return ONLY the corrected data in valid JSON format, with the same structure as the input.
+            Return ONLY the corrected data in valid JSON format, with the same structure as the above json.
+            If a startup is not relevant to the query, remove it completely from the results.
             """
 
-            # Get response from Gemini Pro
+            # Note: Search grounding is configured when the model is initialized
+
+            # Get response from Gemini Pro with search grounding
             response = api_client.pro_model.generate_content(prompt)
 
             # Extract JSON from response

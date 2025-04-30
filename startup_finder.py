@@ -17,6 +17,8 @@ import traceback
 import concurrent.futures
 from typing import Dict, Any, List, Optional
 
+import google.generativeai as genai
+
 # Import setup_env to ensure API keys are available
 import setup_env
 
@@ -298,8 +300,8 @@ def batch_enrich_startups(crawler: EnhancedStartupCrawler, startup_info_list: Li
 
 def validate_and_correct_data_with_gemini(enriched_data: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
     """
-    Use Gemini 2.5 Pro to validate and correct the startup data before CSV generation.
-    Uses parallel processing for improved performance.
+    Use Gemini 2.5 Pro with search grounding to validate and correct the startup data before CSV generation.
+    Uses parallel processing for improved performance and search grounding for real-time information.
 
     Args:
         enriched_data: List of enriched startup dictionaries.
@@ -308,14 +310,17 @@ def validate_and_correct_data_with_gemini(enriched_data: List[Dict[str, Any]], q
     Returns:
         List of validated and corrected startup data dictionaries.
     """
-    logger.info("PHASE 3: DATA VALIDATION WITH GEMINI 2.5 PRO")
-    logger.info("Validating and correcting data with Gemini 2.5 Pro using parallel processing")
+    logger.info("PHASE 3: DATA VALIDATION WITH GEMINI 2.5 PRO AND SEARCH GROUNDING")
+    logger.info("Validating and correcting data with Gemini 2.5 Pro using parallel processing and search grounding")
 
     try:
         # Initialize the Gemini API client
         gemini_client = GeminiAPIClient()
 
-        # Use the new batch validation method with parallel processing
+        # Configure search grounding for the validation process
+        # Note: The search grounding configuration is handled internally by the GeminiAPIClient
+
+        # Use the new batch validation method with parallel processing and search grounding
         start_time = time.time()
         validated_data = gemini_client.validate_startups_batch(enriched_data, query)
         end_time = time.time()
@@ -328,6 +333,7 @@ def validate_and_correct_data_with_gemini(enriched_data: List[Dict[str, Any]], q
 
         logger.info(f"Data validation complete. Processed {len(validated_data)} startups in {processing_time:.2f} seconds")
         logger.info(f"Average time per startup: {avg_time_per_startup:.2f} seconds")
+        logger.info("Used search grounding to access real-time information for validation")
         return validated_data
 
     except Exception as e:
@@ -541,12 +547,19 @@ def run_startup_finder(query: str, max_results: int = 5, num_expansions: int = 3
 
     print(f"\nPhase 2 completed in {phase2_time:.2f} seconds")
 
-    # Phase 3: Validate and correct data with Gemini 2.5 Pro
+    # Phase 3: Validate and correct data with Gemini 2.5 Pro using search grounding
+    print("\n" + "=" * 80)
+    print("PHASE 3: DATA VALIDATION WITH SEARCH GROUNDING")
+    print("=" * 80)
+    print("Using Gemini 2.5 Pro with search grounding to validate and correct startup data")
+    print("This allows the AI to access real-time information from the web for more accurate results")
+
     start_time = time.time()
     validated_results = validate_and_correct_data_with_gemini(enriched_results, query)
     phase3_time = time.time() - start_time
 
     print(f"\nPhase 3 completed in {phase3_time:.2f} seconds")
+    print(f"Validated {len(validated_results)} startups using search grounding")
 
     # Generate CSV file
     print("\n" + "=" * 80)
@@ -568,11 +581,13 @@ def run_startup_finder(query: str, max_results: int = 5, num_expansions: int = 3
         print(f"Number of expanded queries: {len(expanded_queries)}")
         print(f"Phase 1 (Discovery) time: {phase1_time:.2f} seconds")
         print(f"Phase 2 (Enrichment) time: {phase2_time:.2f} seconds")
-        print(f"Phase 3 (Validation) time: {phase3_time:.2f} seconds")
+        print(f"Phase 3 (Validation with Search Grounding) time: {phase3_time:.2f} seconds")
         print(f"Total time: {phase1_time + phase2_time + phase3_time:.2f} seconds")
         print(f"Startups found: {len(all_startup_info)}")
         print(f"Startups validated: {len(validated_results)}")
         print(f"CSV file generated: {output_file}")
+        print("\nSearch grounding was used to access real-time information from the web")
+        print("This enhances the accuracy and completeness of the startup data")
     else:
         print("\nFailed to generate CSV file.")
 

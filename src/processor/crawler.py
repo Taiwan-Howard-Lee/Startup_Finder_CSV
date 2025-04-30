@@ -18,6 +18,9 @@ import logging
 import hashlib
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
+import google.generativeai as genai
+from google.generativeai import types
+
 import requests
 import urllib3
 from bs4 import BeautifulSoup
@@ -303,7 +306,7 @@ class GeminiDataSource(DataSource):
 
         logger.info("Initialized Gemini data source")
 
-    def extract_startup_names(self, title: str, snippet: str, url: str) -> List[str]:
+    def extract_startup_names(self, title: str, snippet: str, url: str, original_query: str = "") -> List[str]:
         """
         Extract startup names from text using Gemini API.
 
@@ -311,6 +314,7 @@ class GeminiDataSource(DataSource):
             title: Title of the article or webpage.
             snippet: Snippet or description of the content.
             url: URL of the webpage.
+            original_query: The original search query used to find this content.
 
         Returns:
             List of startup names.
@@ -323,15 +327,19 @@ class GeminiDataSource(DataSource):
             Focus on real company names, not article titles or general terms.
             If no specific startup names are mentioned, return "No startups found".
 
+            Original Search Query: {original_query}
             Title: {title}
             Description: {snippet}
             URL: {url}
+
+            IMPORTANT: Focus on startups that are RELEVANT to the original search query: "{original_query}"
 
             Look for names that appear in contexts like:
             - "X is a startup that..."
             - "Founded in [year], X is..."
             - Lists of companies or startups
             - Companies mentioned with their products or services
+            - Companies working in fields related to "{original_query}"
 
             Ignore names that are clearly UI elements, navigation links, or common terms.
             """
@@ -442,29 +450,67 @@ class GeminiDataSource(DataSource):
             Here's the list of potential startup names:
             {names_str}
 
-            Please analyze this list and identify which ones are ACTUAL LEGITIMATE STARTUPS or COMPANIES that are relevant to the query.
+            As a startup intelligence analyst, I need you to identify which of these are GENUINE STARTUPS or EARLY-STAGE COMPANIES that are DIRECTLY RELEVANT to the search query: "{original_query}".
 
-            Many of these names are not real startups but rather UI elements, website sections, or malformed extractions.
-            For example, names like "StatesAnysphereAI" or "StatesMistral" are likely not real companies but malformed extractions where "States" was incorrectly included.
+            DEFINITION OF A STARTUP:
+            - A relatively new company (typically <10 years old)
+            - Focused on innovation, growth, and scalability
+            - Often venture-backed or seeking investment
+            - Typically developing new technologies, products, or business models
+            - Usually smaller than established corporations
 
-            For each name, consider:
-            1. Is this a real company or startup that exists in the real world?
-            2. Is it relevant to the query "{original_query}"?
-            3. Does the name make sense as a company name (not a UI element or website section)?
-            4. For names with prefixes like "States", "Kingdom", etc., consider if these are part of the actual company name or extraction errors.
+            RELEVANCE CRITERIA:
+            - The startup's core business, products, or services must directly relate to "{original_query}"
+            - The startup should be operating in the industry or solving problems mentioned in the query
+            - The startup should be targeting the market or audience implied by the query
 
-            Return ONLY the names of LEGITIMATE STARTUPS that are RELEVANT to the query as a comma-separated list.
+            FILTERING INSTRUCTIONS:
+            1. ONLY include ACTUAL STARTUPS that exist in the real world (not fictional examples or UI elements)
+            2. ONLY include startups that are DIRECTLY RELEVANT to "{original_query}" (not tangentially related)
+            3. Exclude established large corporations unless they are specifically relevant to the query
+            4. Exclude names that are clearly website sections, UI elements, or malformed extractions
+            5. Exclude generic terms, common phrases, or names that don't represent actual companies
+            6. For names with prefixes like "States", "Kingdom", etc., exclude them unless you're certain they're part of the actual company name
+
+            RESPONSE FORMAT:
+            Return ONLY the names of LEGITIMATE STARTUPS that are DIRECTLY RELEVANT to the query as a comma-separated list.
             If you're unsure about a name, err on the side of exclusion.
             If none of them appear to be legitimate startups relevant to the query, return "No relevant startups found".
             """
 
-            # Use the Pro model for more complex reasoning
-            response = self.api_client.pro_model.generate_content(prompt)
+            # Use the Pro model with search grounding for more complex reasoning
+            # Note: Search grounding is configured when the model is initialized
+
+            # Generate content with search grounding
+            response = self.api_client.pro_model.generate_content(prompt, stream=True)
+
+            # Process the streaming response to handle search grounding
+            full_response = ""
+            search_queries = []
+
+            for chunk in response:
+                if hasattr(chunk, 'candidates') and chunk.candidates:
+                    candidate = chunk.candidates[0]
+                    if hasattr(candidate, 'content') and candidate.content:
+                        content = candidate.content
+                        if hasattr(content, 'parts') and content.parts:
+                            for part in content.parts:
+                                if hasattr(part, 'text') and part.text:
+                                    full_response += part.text
+                                elif hasattr(part, 'function_call'):
+                                    if part.function_call.name == "search":
+                                        query = part.function_call.args.get("query", "No query provided")
+                                        search_queries.append(query)
+                                        logger.info(f"Search grounding query: {query}")
+
+            # Log search grounding usage
+            if search_queries:
+                logger.info(f"Used {len(search_queries)} search queries for grounding")
 
             # Extract filtered startup names from response
-            if response.text and "No relevant startups found" not in response.text:
+            if full_response and "No relevant startups found" not in full_response:
                 # Split by commas and clean up
-                filtered_names = [name.strip() for name in response.text.split(',')]
+                filtered_names = [name.strip() for name in full_response.split(',')]
 
                 logger.info(f"Gemini Pro filtered {len(filtered_names)} relevant startup names")
                 return filtered_names
@@ -1247,7 +1293,8 @@ class StartupCrawler:
                         result.get("title", ""),
                         result.get("snippet", ""),
                         raw_html,
-                        soup
+                        soup,
+                        query  # Pass the original query
                     )
                     future_to_url[future] = url
 
@@ -1291,7 +1338,7 @@ class StartupCrawler:
 
         return startup_info_list
 
-    def _process_search_result(self, url: str, title: str, snippet: str, raw_html: str, soup: BeautifulSoup) -> Tuple[List[str], Dict[str, Any]]:
+    def _process_search_result(self, url: str, title: str, snippet: str, raw_html: str, soup: BeautifulSoup, original_query: str = "") -> Tuple[List[str], Dict[str, Any]]:
         # Note: raw_html is used by the extract_startup_names_with_patterns method called below
         """
         Process a single search result to extract startup names.
@@ -1302,6 +1349,7 @@ class StartupCrawler:
             snippet: Snippet from the search result.
             raw_html: Raw HTML content.
             soup: BeautifulSoup object.
+            original_query: The original search query used to find this content.
 
         Returns:
             Tuple of (validated_names, source_info).
@@ -1323,7 +1371,7 @@ class StartupCrawler:
         logger.info(f"Found {len(potential_names)} potential startup names using patterns")
 
         # Extract startup names using Gemini
-        gemini_names = self.gemini.extract_startup_names(title, snippet, url)
+        gemini_names = self.gemini.extract_startup_names(title, snippet, url, original_query)
         logger.info(f"Gemini extracted {len(gemini_names)} startup names")
 
         # Combine all names
@@ -1562,28 +1610,24 @@ class StartupCrawler:
 
 # Define backward compatibility classes
 
-# Import mock AutoScraperDataSource for backward compatibility
-try:
-    from src.processor.autoscraper_mock import AutoScraperDataSource
-except ImportError:
-    # Define a minimal AutoScraperDataSource if the import fails
-    class AutoScraperDataSource:
-        """Minimal mock implementation of AutoScraperDataSource."""
+# Define a minimal AutoScraperDataSource for backward compatibility
+class AutoScraperDataSource:
+    """Minimal mock implementation of AutoScraperDataSource."""
 
-        def __init__(self, model_path=None):
-            self.is_trained = False
+    def __init__(self, model_path=None):
+        self.is_trained = False
 
-        def train_scraper(self, url, data):
-            return True
+    def train_scraper(self, url, data):
+        return True
 
-        def extract_startup_data(self, url):
-            return {"Company Name": "MockStartup", "Website": url}
+    def extract_startup_data(self, url):
+        return {"Company Name": "MockStartup", "Website": url}
 
-        def save_model(self, model_path):
-            return True
+    def save_model(self, model_path):
+        return True
 
-        def load_model(self, model_path):
-            return True
+    def load_model(self, model_path):
+        return True
 
 # Alias for backward compatibility
 Crawler = StartupCrawler

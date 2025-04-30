@@ -6,6 +6,7 @@ A tool that discovers and collects information about startups based on search qu
 
 - **Two-Phase Crawling**: Discovers startup names from search results, then enriches data for each startup
 - **LLM-Based Filtering**: Uses Gemini AI to extract, validate, and filter startup names
+- **Search Grounding**: Leverages Gemini Pro's ability to search the web for real-time information
 - **CSV Generation**: Outputs clean, structured data in CSV format for easy analysis
 - **Customizable Queries**: Search for startups in any industry or location
 
@@ -49,12 +50,28 @@ startup-finder/
    GOOGLE_CSE_ID=your_google_custom_search_engine_id
    ```
 
+## Search Grounding
+
+The Startup Intelligence Finder uses Gemini Pro's search grounding capability to access real-time information from the web. This powerful feature allows the AI to:
+
+1. **Verify Information**: Cross-check startup details against the latest online sources
+2. **Fill Knowledge Gaps**: Find missing information that isn't available in the initial data
+3. **Validate Relevance**: Ensure startups are truly relevant to the search query
+4. **Access Latest News**: Incorporate recent developments and announcements
+5. **Enhance Accuracy**: Correct outdated or inaccurate information
+
+To see an example of search grounding in action, run:
+
+```
+python examples/search_grounding_example.py
+```
+
 ## Usage
 
 Run the CSV generator script:
 
 ```
-python generate_startup_csv.py
+python startup_finder.py
 ```
 
 Follow the prompts to:
@@ -64,8 +81,9 @@ Follow the prompts to:
 
 The script will:
 - Discover startup names from search results
-- Filter out non-startup names using Gemini AI
-- Enrich data for each startup
+- Filter out non-startup names using Gemini AI with search grounding
+- Enrich data for each startup using multiple sources
+- Validate and correct information using search grounding
 - Generate a CSV file with the results
 
 ## Example Output
@@ -95,14 +113,16 @@ The test suite includes:
 - Tests for parallel processing
 - Tests for URL normalization and adaptive crawling
 - Tests for startup discovery and data enrichment
+- Tests for search grounding functionality
 
 ## Dependencies
 
 - Google API Client
-- Gemini API
+- Google Generative AI (Gemini API)
 - BeautifulSoup4
 - Requests
 - Python-dotenv
+- Google Search API
 
 ## License
 

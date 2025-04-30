@@ -16,7 +16,7 @@ beautifulsoup4>=4.11.0
 lxml>=4.9.0
 
 # Web scraping
-autoscraper>=1.1.14
+# autoscraper removed - not used in the codebase
 
 # Testing
 pytest>=7.0.0
