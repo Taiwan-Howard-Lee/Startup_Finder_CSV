@@ -523,7 +523,6 @@ class GeminiAPIClient:
             2. CORRECT any anomalies, inconsistencies, or inaccuracies
             3. FILL IN missing information where possible
             4. STANDARDIZE formatting across all entries
-            5. REMOVE any startups that are not relevant to the query
 
             STARTUP RELEVANCE CRITERIA:
             - The startup's core business, products, or services must directly relate to query
