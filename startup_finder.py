@@ -15,12 +15,16 @@ import argparse
 import re
 import traceback
 import concurrent.futures
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 
 import google.generativeai as genai
 
 # Import setup_env to ensure API keys are available
 import setup_env
+
+# Type checking imports
+if TYPE_CHECKING:
+    from src.utils.metrics_collector import MetricsCollector
 
 # Import core functionality
 from src.processor.enhanced_crawler import EnhancedStartupCrawler
@@ -255,13 +259,15 @@ def enrich_startup_data(crawler: EnhancedStartupCrawler, startup_name: str) -> D
     return startup_data
 
 
-def batch_enrich_startups(crawler: EnhancedStartupCrawler, startup_info_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def batch_enrich_startups(crawler: EnhancedStartupCrawler, startup_info_list: List[Dict[str, Any]],
+                       metrics_collector: Optional["MetricsCollector"] = None) -> List[Dict[str, Any]]:
     """
     Enrich a batch of startups with detailed information using parallel processing.
 
     Args:
         crawler: StartupCrawler instance.
         startup_info_list: List of basic startup information.
+        metrics_collector: Optional metrics collector.
 
     Returns:
         List of enriched startup data.
@@ -278,17 +284,40 @@ def batch_enrich_startups(crawler: EnhancedStartupCrawler, startup_info_list: Li
         for startup_info in startup_info_list:
             startup_name = startup_info.get("Company Name", "Unknown")
             logger.info(f"Submitting: {startup_name}")
+
+            # Track startup for metrics
+            if metrics_collector:
+                metrics_collector.add_final_startup(startup_name, startup_info)
+
+            # Start timing for enrichment
+            start_time = time.time()
+
             future = executor.submit(enrich_startup_data, crawler, startup_name)
-            future_to_startup[future] = startup_name
+            future_to_startup[future] = (startup_name, start_time)
 
         # Process results as they complete
         for future in concurrent.futures.as_completed(future_to_startup):
-            startup_name = future_to_startup[future]
+            startup_name, start_time = future_to_startup[future]
             try:
                 enriched_data = future.result()
                 enriched_results.append(enriched_data)
                 logger.info(f"Completed: {startup_name}")
                 logger.debug(f"Data fields: {list(enriched_data.keys())}")
+
+                # Track enrichment time and field values for metrics
+                if metrics_collector:
+                    enrichment_time = time.time() - start_time
+                    metrics_collector.startup_enrichment_times.append(enrichment_time)
+                    metrics_collector.startup_enrichment_time_map[startup_name] = enrichment_time
+
+                    # Track field completion
+                    for field, value in enriched_data.items():
+                        if value:
+                            metrics_collector.field_values[startup_name][field] = value
+                            metrics_collector.field_counts[field] += 1
+
+                    metrics_collector.total_startups += 1
+
             except Exception as e:
                 logger.error(f"Error enriching data for {startup_name}: {e}")
                 # Add basic info to maintain order
@@ -458,6 +487,10 @@ def run_startup_finder(query: str, max_results: int = 5, num_expansions: int = 3
     crawler = EnhancedStartupCrawler(max_workers=max_workers)
     print(f"Using {max_workers} parallel workers for maximum speed")
 
+    # Create a metrics collector to track performance
+    from src.utils.metrics_collector import MetricsCollector
+    metrics_collector = MetricsCollector()
+
     # Initialize query expander if needed
     expanded_queries = [query]  # Default to just the original query
     if use_query_expansion:
@@ -505,7 +538,7 @@ def run_startup_finder(query: str, max_results: int = 5, num_expansions: int = 3
             print(f"\nProcessing query {i+1}/{len(expanded_queries)}: {expanded_query}")
 
             # Discover startups for this query
-            startup_info_list = crawler.discover_startups(expanded_query, max_results=max_results)
+            startup_info_list = crawler.discover_startups(expanded_query, max_results=max_results, metrics_collector=metrics_collector)
 
             # Add to the combined list, avoiding duplicates
             existing_names = {startup.get("Company Name", "").lower() for startup in all_startup_info}
@@ -538,10 +571,10 @@ def run_startup_finder(query: str, max_results: int = 5, num_expansions: int = 3
 
     # Use our custom enrichment function for direct startups
     if direct_startups:
-        enriched_results = batch_enrich_startups(crawler, all_startup_info)
+        enriched_results = batch_enrich_startups(crawler, all_startup_info, metrics_collector=metrics_collector)
     else:
         # Use the crawler's built-in enrichment for discovered startups
-        enriched_results = crawler.enrich_startup_data(all_startup_info)
+        enriched_results = crawler.enrich_startup_data(all_startup_info, metrics_collector=metrics_collector)
 
     phase2_time = time.time() - start_time
 
@@ -573,6 +606,16 @@ def run_startup_finder(query: str, max_results: int = 5, num_expansions: int = 3
     )
 
     if success:
+        # Generate consolidated metrics reports
+        from src.utils.report_generator import export_consolidated_reports
+
+        # Generate timestamp for report filenames
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        base_filename = f"startup_finder_{timestamp}"
+
+        # Export consolidated reports
+        report_files = export_consolidated_reports(metrics_collector, base_filename)
+
         # Summary
         print("\n" + "=" * 80)
         print("SUMMARY")
@@ -585,7 +628,10 @@ def run_startup_finder(query: str, max_results: int = 5, num_expansions: int = 3
         print(f"Total time: {phase1_time + phase2_time + phase3_time:.2f} seconds")
         print(f"Startups found: {len(all_startup_info)}")
         print(f"Startups validated: {len(validated_results)}")
-        print(f"CSV file generated: {output_file}")
+        print(f"CSV files generated:")
+        print(f"- Main startup data: {output_file}")
+        print(f"- Consolidated metrics report: {report_files['metrics']}")
+        print(f"- Consolidated startup data: {report_files['startups']}")
         print("\nSearch grounding was used to access real-time information from the web")
         print("This enhances the accuracy and completeness of the startup data")
     else:

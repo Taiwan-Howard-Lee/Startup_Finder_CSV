@@ -5,16 +5,19 @@ This module provides an enhanced version of the StartupCrawler that uses
 Google Search as a proxy to extract data from LinkedIn and Crunchbase.
 """
 
-import re
 import logging
-from typing import Dict, Any, List, Optional, Tuple
-from bs4 import BeautifulSoup
+import time
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 
 from src.processor.crawler import StartupCrawler
 from src.processor.website_extractor import WebsiteExtractor
 from src.processor.linkedin_extractor import LinkedInExtractor
 from src.processor.crunchbase_extractor import CrunchbaseExtractor
 from src.utils.api_client import GeminiAPIClient
+
+# Type checking imports
+if TYPE_CHECKING:
+    from src.utils.metrics_collector import MetricsCollector
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -25,13 +28,15 @@ class EnhancedStartupCrawler(StartupCrawler):
     to extract data from LinkedIn and Crunchbase.
     """
 
-    def enrich_startup_data(self, startup_info_list: List[Dict[str, Any]], max_results_per_startup: int = 10) -> List[Dict[str, Any]]:
+    def enrich_startup_data(self, startup_info_list: List[Dict[str, Any]], max_results_per_startup: int = 10,
+                          metrics_collector: Optional["MetricsCollector"] = None) -> List[Dict[str, Any]]:
         """
         Enrich a list of startup data with additional information.
 
         Args:
             startup_info_list: List of dictionaries containing basic startup information.
             max_results_per_startup: Maximum number of search results to process per startup.
+            metrics_collector: Optional metrics collector.
 
         Returns:
             List of enriched startup data dictionaries.
@@ -39,9 +44,34 @@ class EnhancedStartupCrawler(StartupCrawler):
         enriched_results = []
 
         for startup_info in startup_info_list:
+            startup_name = startup_info.get("Company Name", "")
+
+            # Track startup for metrics
+            if metrics_collector and startup_name:
+                metrics_collector.add_final_startup(startup_name, startup_info)
+
+            # Start timing for enrichment
+            start_time = time.time()
+
+            # Enrich the startup data
             enriched_data = self._enrich_single_startup_enhanced(startup_info, max_results_per_startup)
+
             if enriched_data:
                 enriched_results.append(enriched_data)
+
+                # Track enrichment time and field values for metrics
+                if metrics_collector and startup_name:
+                    enrichment_time = time.time() - start_time
+                    metrics_collector.startup_enrichment_times.append(enrichment_time)
+                    metrics_collector.startup_enrichment_time_map[startup_name] = enrichment_time
+
+                    # Track field completion
+                    for field, value in enriched_data.items():
+                        if value:
+                            metrics_collector.field_values[startup_name][field] = value
+                            metrics_collector.field_counts[field] += 1
+
+                    metrics_collector.total_startups += 1
 
         logger.info(f"Enriched data for {len(enriched_results)} startups")
 

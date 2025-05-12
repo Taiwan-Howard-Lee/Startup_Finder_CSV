@@ -13,7 +13,11 @@ import time
 import random
 import urllib.parse
 import concurrent.futures
-from typing import Dict, List, Optional, Any, Tuple, Set, Union
+from typing import Dict, List, Optional, Any, Tuple, Set, Union, TYPE_CHECKING
+
+# Type checking imports
+if TYPE_CHECKING:
+    from src.utils.metrics_collector import MetricsCollector
 import logging
 import hashlib
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
@@ -308,7 +312,7 @@ class GeminiDataSource(DataSource):
 
     def extract_startup_names(self, title: str, snippet: str, url: str, original_query: str = "") -> List[str]:
         """
-        Extract startup names from text using Gemini API.
+        Extract startup names from the full webpage content using Gemini API.
 
         Args:
             title: Title of the article or webpage.
@@ -319,55 +323,142 @@ class GeminiDataSource(DataSource):
         Returns:
             List of startup names.
         """
+        # First, crawl the full webpage content using Crawl4AI
+        import asyncio
         try:
-            # Create a prompt for Gemini
-            prompt = f"""
-            Extract the names of actual startup companies from the following text.
-            Return only the company names as a comma-separated list.
-            Focus on real company names, not article titles or general terms.
-            If no specific startup names are mentioned, return "No startups found".
+            from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
+        except ImportError:
+            logger.warning("Crawl4AI not installed. Installing now...")
+            import subprocess
+            subprocess.check_call(["pip", "install", "crawl4ai"])
+            from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
 
-            Original Search Query: {original_query}
-            Title: {title}
-            Description: {snippet}
-            URL: {url}
+        # Function to run the crawler asynchronously
+        async def crawl_page():
+            async with AsyncWebCrawler() as crawler:
+                config = CrawlerRunConfig(
+                    page_timeout=30000,  # 30 seconds timeout
+                    wait_until='domcontentloaded',
+                    magic=True  # Enable magic mode for better extraction
+                )
+                result = await crawler.arun(url=url, config=config)
+                return result.markdown if result.success else None
 
-            IMPORTANT: Focus on startups that are RELEVANT to the original search query: "{original_query}"
+        # Run the crawler
+        try:
+            page_content = asyncio.run(crawl_page())
 
-            Look for names that appear in contexts like:
-            - "X is a startup that..."
-            - "Founded in [year], X is..."
-            - Lists of companies or startups
-            - Companies mentioned with their products or services
-            - Companies working in fields related to "{original_query}"
+            # Log successful crawl
+            if page_content:
+                logger.info(f"Crawl4AI successfully retrieved content from {url}")
+                logger.info(f"Content length: {len(page_content)} characters")
+                logger.info(f"Content preview: {page_content[:500]}...")
+        except Exception as e:
+            logger.error(f"Error crawling page with Crawl4AI: {e}")
+            page_content = None
 
-            Ignore names that are clearly UI elements, navigation links, or common terms.
-            """
+        # If crawling failed, try Beautiful Soup as a secondary method
+        if not page_content:
+            logger.warning(f"Crawl4AI failed for {url}, trying Beautiful Soup as fallback")
+            try:
+                # Create a session with retry capability
+                session = requests.Session()
+                retry_strategy = Retry(
+                    total=3,
+                    backoff_factor=0.1,
+                    status_forcelist=[429, 500, 502, 503, 504],
+                    allowed_methods=["GET", "HEAD"]
+                )
+                adapter = HTTPAdapter(max_retries=retry_strategy)
+                session.mount("http://", adapter)
+                session.mount("https://", adapter)
 
-            # Get response from Gemini
-            response = self.api_client.flash_model.generate_content(prompt)
+                # Set headers to mimic a browser
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.5",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1"
+                }
+
+                # Make the request
+                response = session.get(url, headers=headers, timeout=15, verify=False)
+                response.raise_for_status()
+
+                # Parse the HTML with Beautiful Soup
+                soup = BeautifulSoup(response.text, "lxml")
+
+                # Extract text content
+                # Remove script and style elements
+                for script in soup(["script", "style", "nav", "footer", "header"]):
+                    script.extract()
+
+                # Get text
+                text = soup.get_text(separator="\n", strip=True)
+
+                # Clean up text
+                lines = [line.strip() for line in text.splitlines() if line.strip()]
+                page_content = "\n".join(lines)
+
+                logger.info(f"Beautiful Soup successfully extracted content from {url}")
+                logger.info(f"Content length: {len(page_content)} characters")
+                logger.info(f"Content preview: {page_content[:500]}...")
+            except Exception as e:
+                logger.error(f"Beautiful Soup extraction failed for {url}: {e}")
+                logger.warning(f"All extraction methods failed, falling back to search snippet")
+                page_content = f"Title: {title}\nDescription: {snippet}\nURL: {url}"
+
+        # Create a more explicit prompt for Gemini with the full page content
+        prompt = f"""
+        You are a startup and company name extractor. Your task is to identify and extract the names of companies mentioned in the following webpage content.
+
+        IMPORTANT INSTRUCTIONS:
+        1. Extract ALL company names from the content, including both startups and established companies
+        2. Exclude website names, section headers, and navigation elements
+        3. Return ONLY the company names as a comma-separated list
+        4. If no companies are found, return "No startups found"
+        5. Do not include any explanations, just the list of names
+
+        URL: {url}
+
+        CONTENT:
+        {page_content}
+        """
+
+        # Get response from Gemini
+        try:
+            logger.info(f"Sending prompt to Gemini for startup extraction from URL: {url}")
+            logger.debug(f"Prompt: {prompt[:500]}...")
+
+            try:
+                response = self.api_client.flash_model.generate_content(prompt)
+                logger.info(f"Received response from Gemini: {response.text[:200]}...")
+            except Exception as api_e:
+                logger.error(f"Error from Gemini API: {api_e}")
+                logger.error(f"Model name: {self.api_client.flash_model.model_name}")
+                raise api_e
 
             # Extract startup names from response
             if response.text and "No startups found" not in response.text:
                 # Split by commas and clean up
                 startup_names = [name.strip() for name in response.text.split(',')]
 
-                # Filter out non-company names
-                filtered_names = []
-                for name in startup_names:
-                    # Skip if it's too short or doesn't look like a company name
-                    if len(name) < 3 or name in ["AI", "The", "And", "For", "Inc", "Ltd"]:
-                        continue
-                    filtered_names.append(name)
+                # Remove any empty strings after stripping
+                startup_names = [name for name in startup_names if name]
 
-                logger.info(f"Gemini extracted {len(filtered_names)} startup names")
-                return filtered_names
+                logger.info(f"Gemini extracted {len(startup_names)} startup names")
+                return startup_names
             else:
                 logger.info("Gemini found no startup names")
                 return []
 
         except Exception as e:
             logger.error(f"Error extracting startup names with Gemini: {e}")
+
+            # Pattern-based extraction has been completely removed from the codebase
+            # If Gemini API fails, we simply return an empty list
+            logger.warning("Gemini API failed. Returning empty list.")
             return []
 
     def validate_startup_names(self, names: List[str], url: str) -> List[str]:
@@ -402,9 +493,6 @@ class GeminiDataSource(DataSource):
 
             Be somewhat lenient in your filtering - include names that have reasonable evidence of being actual companies.
             For example, if a name appears in a list of startups or companies, or if it has a specific product or service associated with it, consider it valid.
-
-            Example: If the webpage is about "Top 10 AI Startups" and mentions "OpenAI, Anthropic, Cohere" in a list, these should be included as valid startup names.
-            However, terms like "SignUp", "ReadMore", "ContactUs" that are clearly UI elements should be excluded.
             """
 
             # Get response from Gemini
@@ -453,9 +541,7 @@ class GeminiDataSource(DataSource):
             As a startup intelligence analyst, I need you to identify which of these are GENUINE STARTUPS or EARLY-STAGE COMPANIES that are DIRECTLY RELEVANT to the search query: "{original_query}".
 
             DEFINITION OF A STARTUP:
-            - A relatively new company (typically <10 years old)
             - Focused on innovation, growth, and scalability
-            - Often venture-backed or seeking investment
             - Typically developing new technologies, products, or business models
             - Usually smaller than established corporations
 
@@ -466,14 +552,13 @@ class GeminiDataSource(DataSource):
 
             FILTERING INSTRUCTIONS:
             1. ONLY include ACTUAL STARTUPS that exist in the real world (not fictional examples or UI elements)
-            2. ONLY include startups that are DIRECTLY RELEVANT to "{original_query}" (not tangentially related)
+            2. ONLY include startups that are RELEVANT to "{original_query}"
             3. Exclude established large corporations unless they are specifically relevant to the query
             4. Exclude names that are clearly website sections, UI elements, or malformed extractions
             5. Exclude generic terms, common phrases, or names that don't represent actual companies
-            6. For names with prefixes like "States", "Kingdom", etc., exclude them unless you're certain they're part of the actual company name
 
             RESPONSE FORMAT:
-            Return ONLY the names of LEGITIMATE STARTUPS that are DIRECTLY RELEVANT to the query as a comma-separated list.
+            Return ONLY the names of LEGITIMATE STARTUPS that are RELEVANT to the query as a comma-separated list.
             If you're unsure about a name, err on the side of exclusion.
             If none of them appear to be legitimate startups relevant to the query, return "No relevant startups found".
             """
@@ -847,26 +932,46 @@ class WebCrawler:
 
         return strategies
 
-    def fetch_webpage(self, url: str, retry_count: int = 0) -> Tuple[Optional[str], Optional[BeautifulSoup]]:
+    def fetch_webpage(self, url: str, retry_count: int = 0, metrics_collector: Optional["MetricsCollector"] = None) -> Tuple[Optional[str], Optional[BeautifulSoup]]:
         """
         Fetch a webpage and return its content using a single optimized strategy.
 
         Args:
             url: URL of the webpage to fetch.
             retry_count: Current retry attempt (used internally).
+            metrics_collector: Optional metrics collector.
 
         Returns:
             Tuple of (raw_html, parsed_html) or (None, None) if fetch failed.
         """
+        start_time = time.time()
+
         # Normalize the URL to avoid duplicates
         normalized_url = URLNormalizer.normalize(url)
 
-        # Don't skip URLs during discovery phase
-        # We want to process all URLs even if they've been seen before
+        # Check if we should skip this URL due to robots.txt
+        if not self.robots_checker.can_fetch(url):
+            if metrics_collector:
+                metrics_collector.add_blocked_url(url)
+            logger.info(f"Skipping {url} due to robots.txt rules")
+            return None, None
 
         # Check cache first
         if normalized_url in self.cache:
+            if metrics_collector:
+                metrics_collector.urls_cache_hit += 1
             return self.cache[normalized_url]
+
+        # Check if this URL has been processed before
+        url_fingerprint = URLNormalizer.get_url_fingerprint(normalized_url)
+        if url_fingerprint in self.url_fingerprints:
+            if metrics_collector:
+                metrics_collector.urls_skipped_duplicate += 1
+            logger.info(f"Skipping duplicate URL: {url}")
+            return None, None
+
+        # Add to processed URLs
+        self.url_fingerprints.add(url_fingerprint)
 
         # Check robots.txt - but don't retry or spend time on errors
         try:
@@ -880,7 +985,7 @@ class WebCrawler:
         # Respect rate limits - simplified
         self._respect_rate_limits(url)
 
-        # Use only a single fast request with a short timeout
+        # First try with our optimized session with connection pooling
         try:
             # Use our optimized session with connection pooling
             response = self.session.get(
@@ -897,19 +1002,72 @@ class WebCrawler:
 
             # Cache the result
             self.cache[normalized_url] = (response.text, soup)
+
+            # Record metrics
+            if metrics_collector:
+                processing_time = time.time() - start_time
+                metrics_collector.add_processed_url(url, processing_time)
+
+            logger.info(f"Successfully fetched {url} with primary method")
             return response.text, soup
 
         except Exception as e:
-            # If the request fails, log the error and return None immediately
-            logger.error(f"Failed to fetch {url}: {e}")
-            return None, None
+            # If the primary method fails, try with Beautiful Soup as a fallback
+            logger.warning(f"Primary fetch method failed for {url}: {e}")
+            logger.info(f"Trying Beautiful Soup fallback for {url}")
 
-    def fetch_webpages_parallel(self, urls: List[str]) -> Dict[str, Tuple[Optional[str], Optional[BeautifulSoup]]]:
+            try:
+                # Create a new session with different settings
+                fallback_session = requests.Session()
+                retry_strategy = Retry(
+                    total=3,
+                    backoff_factor=0.1,
+                    status_forcelist=[429, 500, 502, 503, 504],
+                    allowed_methods=["GET", "HEAD"]
+                )
+                adapter = HTTPAdapter(max_retries=retry_strategy)
+                fallback_session.mount("http://", adapter)
+                fallback_session.mount("https://", adapter)
+
+                # Set headers to mimic a browser
+                fallback_headers = {
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.5",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1"
+                }
+
+                # Make the request with a longer timeout
+                response = fallback_session.get(
+                    url,
+                    headers=fallback_headers,
+                    timeout=15,
+                    verify=False,
+                    allow_redirects=True
+                )
+                response.raise_for_status()
+
+                # Parse the HTML
+                soup = BeautifulSoup(response.text, "lxml")
+
+                # Cache the result
+                self.cache[normalized_url] = (response.text, soup)
+                logger.info(f"Successfully fetched {url} with Beautiful Soup fallback")
+                return response.text, soup
+
+            except Exception as fallback_e:
+                # If both methods fail, log the error and return None
+                logger.error(f"Both primary and fallback fetch methods failed for {url}. Primary error: {e}, Fallback error: {fallback_e}")
+                return None, None
+
+    def fetch_webpages_parallel(self, urls: List[str], metrics_collector: Optional["MetricsCollector"] = None) -> Dict[str, Tuple[Optional[str], Optional[BeautifulSoup]]]:
         """
         Fetch multiple webpages in parallel using adaptive crawling techniques.
 
         Args:
             urls: List of URLs to fetch.
+            metrics_collector: Optional metrics collector.
 
         Returns:
             Dictionary mapping URLs to (raw_html, parsed_html) tuples.
@@ -920,7 +1078,7 @@ class WebCrawler:
 
         for url in urls:
             normalized_url = URLNormalizer.normalize(url)
-            url_fingerprint = URLNormalizer.get_url_fingerprint(normalized_url)
+            # We don't need to use the fingerprint here, just normalize the URL
 
             # Don't skip URLs during discovery phase
             # We want to process all URLs even if they've been seen before
@@ -945,7 +1103,8 @@ class WebCrawler:
         if urls_to_fetch:
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 # Submit all fetch tasks
-                future_to_url = {executor.submit(self.fetch_webpage, url): url for url in urls_to_fetch}
+                # Pass metrics_collector to fetch_webpage
+                future_to_url = {executor.submit(self.fetch_webpage, url, metrics_collector=metrics_collector): url for url in urls_to_fetch}
 
                 # Process results as they complete
                 for future in concurrent.futures.as_completed(future_to_url):
@@ -956,6 +1115,8 @@ class WebCrawler:
                     except Exception as e:
                         logger.error(f"Error in parallel fetch for {url}: {e}")
                         results[url] = (None, None)
+                        if metrics_collector:
+                            metrics_collector.add_failed_url(url)
 
         return results
 
@@ -1017,95 +1178,8 @@ class WebCrawler:
             logger.error(f"Error extracting links from {base_url}: {e}")
             return []
 
-    def extract_startup_names_with_patterns(self, content: str) -> List[str]:
-        """
-        Extract startup names from content using more flexible patterns.
-
-        Args:
-            content: Text content to extract names from.
-
-        Returns:
-            List of potential startup names.
-        """
-        potential_names = []
-
-        # More flexible patterns for company names
-        # Look for capitalized words or phrases that might be company names
-        company_patterns = [
-            # Company name followed by description
-            r'([A-Z][a-zA-Z0-9\-\s]{2,30})(?:\s*[-–:]\s*|\s*is\s+a\s+|\s*,\s+a\s+)([^\.]+(?:startup|company|technology|solution|platform))',
-            # Company name with founding year
-            r'([A-Z][a-zA-Z0-9\-\s]{2,30})(?:\s+was\s+founded\s+in\s+\d{4})',
-            # Company name with location
-            r'([A-Z][a-zA-Z0-9\-\s]{2,30})(?:\s+is\s+based\s+in\s+)',
-            # Company name with product
-            r'([A-Z][a-zA-Z0-9\-\s]{2,30})(?:\s+has\s+developed\s+)'
-        ]
-
-        for pattern in company_patterns:
-            matches = re.findall(pattern, content)
-            if matches:
-                for match in matches:
-                    # The first group contains the company name
-                    if isinstance(match, tuple):
-                        company_name = match[0].strip()
-                    else:
-                        company_name = match.strip()
-
-                    if company_name and len(company_name) > 2:
-                        potential_names.append(company_name)
-
-        return potential_names
-
-    def extract_startup_names_from_lists(self, soup: BeautifulSoup) -> List[str]:
-        """
-        Extract startup names from HTML list items.
-
-        Args:
-            soup: BeautifulSoup object of the parsed HTML.
-
-        Returns:
-            List of potential startup names.
-        """
-        potential_names = []
-
-        # Extract from list items
-        list_items = soup.find_all('li')
-        for item in list_items:
-            text = item.get_text().strip()
-
-            # Check if the list item starts with a potential company name
-            if text and text[0].isupper():
-                # Extract the first part that might be a company name
-                potential_name = text.split(':')[0].split(' - ')[0].split(',')[0].strip()
-                if len(potential_name) > 2 and potential_name not in potential_names:
-                    potential_names.append(potential_name)
-
-            # Also look for company names in the middle of list items
-            # Common patterns in lists of startups
-            list_patterns = [
-                r'([A-Z][a-zA-Z0-9\-\s]{2,30})(?:\s*[-–:]\s*|\s*is\s+a\s+|\s*,\s+a\s+)',
-                r'([A-Z][a-zA-Z0-9\-\s]{2,30})(?:\s+was\s+founded)',
-                r'([A-Z][a-zA-Z0-9\-\s]{2,30})(?:\s+is\s+based)'
-            ]
-
-            for pattern in list_patterns:
-                matches = re.findall(pattern, text)
-                if matches:
-                    for match in matches:
-                        company_name = match.strip()
-                        if company_name and len(company_name) > 2 and company_name not in potential_names:
-                            potential_names.append(company_name)
-
-        # Also check for names in headings (often used for company listings)
-        headings = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
-        for heading in headings:
-            text = heading.get_text().strip()
-            # If the heading is short and starts with a capital letter, it might be a company name
-            if 2 < len(text) < 30 and text[0].isupper() and text not in potential_names:
-                potential_names.append(text)
-
-        return potential_names
+    # Pattern matching methods have been removed as they are no longer used
+    # The system now relies exclusively on LLM-based extraction
 
     def adaptive_crawl(self, start_url: str, max_depth: int = 2, max_pages: int = 10, filter_same_domain: bool = True) -> Dict[str, Tuple[Optional[str], Optional[BeautifulSoup]]]:
         """
@@ -1179,46 +1253,18 @@ class WebCrawler:
         """
         Filter out common words and non-startup names.
 
+        Note: This method is kept for backward compatibility but is no longer used
+        in the main extraction flow since pattern matching has been removed.
+
         Args:
             names: List of potential startup names.
 
         Returns:
             Filtered list of startup names.
         """
-        # Common words to filter out
-        common_words = [
-            "The", "This", "That", "These", "Those", "Their", "And", "But", "For",
-            "About", "Home", "Menu", "Search", "Top", "Australia", "April", "March",
-            "Country", "Technology", "Application", "Contact", "Privacy", "Terms",
-            "Copyright", "All", "Rights", "Reserved", "Follow", "Share", "Like",
-            "Comment", "Subscribe", "Newsletter", "Sign", "Login", "Register",
-            "Create", "Account", "Profile", "Settings", "Help", "Support", "FAQ",
-            "Aussie", "Australian", "Tech", "Menu", "Country"
-        ]
-
-        filtered_names = []
-        for name in names:
-            # Skip if it's a common word or too short
-            if name in common_words or len(name) < 3:
-                continue
-
-            # Skip if it's all uppercase (likely a heading)
-            if name.isupper():
-                continue
-
-            # Skip if it contains newlines
-            if "\n" in name:
-                continue
-
-            # Skip if it doesn't look like a company name
-            if not re.match(r'^[A-Z][a-zA-Z0-9]*', name):
-                continue
-
-            # Add if not already in the list
-            if name not in filtered_names:
-                filtered_names.append(name)
-
-        return filtered_names
+        # This method is no longer used in the main extraction flow
+        # but is kept for backward compatibility
+        return names
 
 
 class StartupCrawler:
@@ -1245,18 +1291,23 @@ class StartupCrawler:
 
         logger.info(f"Initialized StartupCrawler with {max_workers} workers")
 
-    def discover_startups(self, query: str, max_results: int = 10) -> List[Dict[str, Any]]:
+    def discover_startups(self, query: str, max_results: int = 10, metrics_collector: Optional["MetricsCollector"] = None) -> List[Dict[str, Any]]:
         """
         Phase 1: Discover startup names based on the query.
 
         Args:
             query: Search query.
             max_results: Maximum number of startup names to discover.
+            metrics_collector: Optional metrics collector.
 
         Returns:
             List of dictionaries containing startup names and basic information.
         """
         logger.info(f"Phase 1: Discovering startups for query: {query}")
+
+        if metrics_collector:
+            metrics_collector.add_query(query)
+            metrics_collector.google_api_calls += 1
 
         # Step 1: Search for articles about startups
         search_results = self.google_search.search(query, max_results=max_results)
@@ -1278,7 +1329,7 @@ class StartupCrawler:
 
         # Fetch webpages in parallel
         logger.info(f"Fetching {len(urls_to_fetch)} webpages in parallel")
-        webpage_results = self.web_crawler.fetch_webpages_parallel(urls_to_fetch)
+        webpage_results = self.web_crawler.fetch_webpages_parallel(urls_to_fetch, metrics_collector=metrics_collector)
 
         # Process results using ThreadPoolExecutor for parallel processing
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -1294,7 +1345,8 @@ class StartupCrawler:
                         result.get("snippet", ""),
                         raw_html,
                         soup,
-                        query  # Pass the original query
+                        query,  # Pass the original query
+                        metrics_collector  # Pass metrics collector
                     )
                     future_to_url[future] = url
 
@@ -1316,13 +1368,9 @@ class StartupCrawler:
                 except Exception as e:
                         logger.error(f"Error processing search result for {url}: {e}")
 
-        # Step 3: Final filtering using Gemini Pro to identify legitimate startups relevant to the query
-        logger.info(f"Performing final filtering of {len(all_validated_names)} startup names using Gemini Pro...")
-        relevant_startups = self.gemini.filter_relevant_startups(all_validated_names, query)
-
-        # Create the final list of startup info
+        # Create the final list of startup info directly from validated names
         startup_info_list = []
-        for name in relevant_startups:
+        for name in all_validated_names:
             if name in startup_info_map:
                 # Create basic info for this startup
                 basic_info = {
@@ -1331,15 +1379,19 @@ class StartupCrawler:
                 }
 
                 startup_info_list.append(basic_info)
-                logger.info(f"Final relevant startup: {name}")
+                logger.info(f"Found startup: {name}")
+
+                # Track final startup
+                if metrics_collector:
+                    metrics_collector.add_final_startup(name, basic_info)
 
         # Log the number of startups found
         logger.info(f"Found {len(startup_info_list)} startups in discovery phase")
 
         return startup_info_list
 
-    def _process_search_result(self, url: str, title: str, snippet: str, raw_html: str, soup: BeautifulSoup, original_query: str = "") -> Tuple[List[str], Dict[str, Any]]:
-        # Note: raw_html is used by the extract_startup_names_with_patterns method called below
+    def _process_search_result(self, url: str, title: str, snippet: str, raw_html: str, soup: BeautifulSoup,
+                          original_query: str = "", metrics_collector: Optional["MetricsCollector"] = None) -> Tuple[List[str], Dict[str, Any]]:
         """
         Process a single search result to extract startup names.
 
@@ -1347,41 +1399,38 @@ class StartupCrawler:
             url: URL of the webpage.
             title: Title of the webpage.
             snippet: Snippet from the search result.
-            raw_html: Raw HTML content.
+            raw_html: Raw HTML content (not used since pattern matching was removed).
             soup: BeautifulSoup object.
             original_query: The original search query used to find this content.
+            metrics_collector: Optional metrics collector.
 
         Returns:
             Tuple of (validated_names, source_info).
         """
         logger.info(f"Analyzing: {title}")
 
-        # Extract text content
-        content = soup.get_text()
-
-        # Extract startup names using patterns
-        pattern_names = self.web_crawler.extract_startup_names_with_patterns(content)
-
-        # Extract startup names from lists
-        list_names = self.web_crawler.extract_startup_names_from_lists(soup)
-
-        # Combine and filter names
-        potential_names = self.web_crawler.filter_startup_names(pattern_names + list_names)
-
-        logger.info(f"Found {len(potential_names)} potential startup names using patterns")
-
         # Extract startup names using Gemini
         gemini_names = self.gemini.extract_startup_names(title, snippet, url, original_query)
         logger.info(f"Gemini extracted {len(gemini_names)} startup names")
 
-        # Combine all names
-        all_names = list(set(potential_names + gemini_names))
+        # Track LLM-extracted names
+        if metrics_collector:
+            for name in gemini_names:
+                metrics_collector.add_potential_startup_name(name, url)
+                metrics_collector.add_llm_extracted_name(name)
+                metrics_collector.gemini_api_calls += 1
 
         # Validate startup names using Gemini
         validated_names = []
-        if all_names:
-            validated_names = self.gemini.validate_startup_names(all_names, url)
+        if gemini_names:
+            validated_names = self.gemini.validate_startup_names(gemini_names, url)
             logger.info(f"Gemini validated {len(validated_names)} startup names")
+
+            # Track validated names
+            if metrics_collector:
+                for name in validated_names:
+                    metrics_collector.add_validated_name(name)
+                metrics_collector.gemini_api_calls += 1
 
         # Create source info
         source_info = {
@@ -1392,13 +1441,15 @@ class StartupCrawler:
 
         return validated_names, source_info
 
-    def enrich_startup_data(self, startup_info_list: List[Dict[str, Any]], max_results_per_startup: int = 3) -> List[Dict[str, Any]]:
+    def enrich_startup_data(self, startup_info_list: List[Dict[str, Any]], max_results_per_startup: int = 3,
+                          metrics_collector: Optional["MetricsCollector"] = None) -> List[Dict[str, Any]]:
         """
         Phase 2: Enrich startup data using the discovered startup names.
 
         Args:
             startup_info_list: List of dictionaries containing startup names and basic information.
             max_results_per_startup: Maximum number of results to collect per startup.
+            metrics_collector: Optional metrics collector.
 
         Returns:
             List of enriched startup data dictionaries.
@@ -1415,7 +1466,8 @@ class StartupCrawler:
                     future = executor.submit(
                         self._enrich_single_startup,
                         startup_info,
-                        max_results_per_startup
+                        max_results_per_startup,
+                        metrics_collector
                     )
                     future_to_startup[future] = name
 
@@ -1435,13 +1487,15 @@ class StartupCrawler:
 
         return enriched_results
 
-    def _enrich_single_startup(self, startup_info: Dict[str, Any], max_results_per_startup: int) -> Dict[str, Any]:
+    def _enrich_single_startup(self, startup_info: Dict[str, Any], max_results_per_startup: int,
+                             metrics_collector: Optional["MetricsCollector"] = None) -> Dict[str, Any]:
         """
         Enrich data for a single startup.
 
         Args:
             startup_info: Dictionary containing basic startup information.
             max_results_per_startup: Maximum number of results to collect.
+            metrics_collector: Optional metrics collector.
 
         Returns:
             Enriched startup data dictionary.
@@ -1479,6 +1533,10 @@ class StartupCrawler:
         # Search for specific information about this startup
         search_results = self.google_search.search(specific_query, max_results=max_results_per_startup)
 
+        if metrics_collector:
+            metrics_collector.google_api_calls += 1
+            start_time = time.time()
+
         # Prepare URLs for parallel fetching
         urls_to_fetch = []
         url_to_result_map = {}
@@ -1490,7 +1548,7 @@ class StartupCrawler:
                 url_to_result_map[url] = result
 
         # Fetch webpages in parallel
-        webpage_results = self.web_crawler.fetch_webpages_parallel(urls_to_fetch)
+        webpage_results = self.web_crawler.fetch_webpages_parallel(urls_to_fetch, metrics_collector=metrics_collector)
 
         # Process each result
         for url, (raw_html, soup) in webpage_results.items():
@@ -1565,6 +1623,65 @@ class StartupCrawler:
                         merged_data["Website"] = official_url
             except Exception as e:
                 logger.error(f"Error finding official website for {name}: {e}")
+
+        # Get LinkedIn data if we have a LinkedIn URL
+        if "LinkedIn" in merged_data and merged_data["LinkedIn"]:
+            try:
+                linkedin_url = merged_data["LinkedIn"]
+                logger.info(f"Extracting LinkedIn data for {name} from {linkedin_url}")
+                linkedin_data = LinkedInExtractor.extract_data(company_name=name, url=linkedin_url)
+
+                # Merge LinkedIn data
+                if linkedin_data:
+                    for key, value in linkedin_data.items():
+                        if value and (key not in merged_data or not merged_data[key]):
+                            merged_data[key] = value
+                    logger.info(f"Added LinkedIn data for {name}: {list(linkedin_data.keys())}")
+            except Exception as e:
+                logger.error(f"Error extracting LinkedIn data for {name}: {e}")
+
+        # Get Crunchbase data using Google Search as a proxy
+        try:
+            logger.info(f"Searching for Crunchbase data for {name}")
+            crunchbase_data = CrunchbaseExtractor.search_crunchbase_data(
+                google_search=self.google_search,
+                company_name=name,
+                max_results=3
+            )
+
+            # Merge Crunchbase data
+            if crunchbase_data:
+                for key, value in crunchbase_data.items():
+                    if value and (key not in merged_data or not merged_data[key]):
+                        merged_data[key] = value
+                logger.info(f"Added Crunchbase data for {name}: {list(crunchbase_data.keys())}")
+        except Exception as e:
+            logger.error(f"Error searching Crunchbase data for {name}: {e}")
+
+        # Get website data if we have a website URL
+        if "Website" in merged_data and merged_data["Website"]:
+            try:
+                website_url = merged_data["Website"]
+                logger.info(f"Extracting website data for {name} from {website_url}")
+                website_data = WebsiteExtractor.extract_data(company_name=name, url=website_url)
+
+                # Merge website data
+                if website_data:
+                    for key, value in website_data.items():
+                        if value and (key not in merged_data or not merged_data[key]):
+                            merged_data[key] = value
+                    logger.info(f"Added website data for {name}: {list(website_data.keys())}")
+            except Exception as e:
+                logger.error(f"Error extracting website data for {name}: {e}")
+
+        # Record enrichment time
+        if metrics_collector and 'start_time' in locals():
+            enrichment_time = time.time() - start_time
+            metrics_collector.startup_enrichment_times.append(enrichment_time)
+            metrics_collector.startup_enrichment_time_map[name] = enrichment_time
+
+            # Track field completion
+            metrics_collector.add_final_startup(name, merged_data)
 
         return merged_data
 
