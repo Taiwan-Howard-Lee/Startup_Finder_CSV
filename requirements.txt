@@ -16,7 +16,7 @@ beautifulsoup4>=4.11.0
 lxml>=4.9.0
 
 # Web scraping
-# autoscraper removed - not used in the codebase
+crawl4ai>=0.6.0  # LLM-friendly web crawler
 
 # Testing
 pytest>=7.0.0

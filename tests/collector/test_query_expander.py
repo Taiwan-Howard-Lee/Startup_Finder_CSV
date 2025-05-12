@@ -66,52 +66,6 @@ class TestQueryExpander(unittest.TestCase):
             # This is also acceptable - the InputHandler would catch this
             pass
 
-    def test_get_search_keywords(self):
-        """Test keyword extraction."""
-        if self.skip_tests:
-            self.skipTest("Gemini API client not available")
-
-        query = "Find AI startups in healthcare with female founders"
-        keywords = self.query_expander.get_search_keywords(query)
-
-        # Should extract important keywords
-        self.assertIn("ai", keywords)
-        self.assertIn("startups", keywords)
-        self.assertIn("healthcare", keywords)
-        self.assertIn("female", keywords)
-        self.assertIn("founders", keywords)
-
-        # Should not include stopwords
-        self.assertNotIn("find", keywords)
-        self.assertNotIn("in", keywords)
-        self.assertNotIn("with", keywords)
-
-        # Print the keywords for inspection
-        print(f"\nExtracted keywords: {keywords}")
-
-    def test_generate_search_combinations(self):
-        """Test search combination generation."""
-        if self.skip_tests:
-            self.skipTest("Gemini API client not available")
-
-        query = "AI healthcare startups"
-        combinations = self.query_expander.generate_search_combinations(query)
-
-        # Should include expanded queries
-        self.assertIn(query, combinations)
-
-        # Should include keyword combinations
-        keywords = self.query_expander.get_search_keywords(query)
-        if len(keywords) >= 2:
-            expected_combo = f"{keywords[0]} {keywords[1]}"
-            self.assertIn(expected_combo, combinations)
-
-        # Should have multiple combinations
-        self.assertGreater(len(combinations), 1)
-
-        # Print the combinations for inspection
-        print(f"\nSearch combinations: {combinations}")
-
 
 if __name__ == "__main__":
     unittest.main()

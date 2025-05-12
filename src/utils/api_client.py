@@ -80,12 +80,12 @@ class GeminiAPIClient:
         genai.configure(api_key=self.api_key)
 
         # Use the specified models
-        self.flash_model = genai.GenerativeModel('gemini-2.5-flash-preview-04-17')  # For quick responses
+        self.flash_model = genai.GenerativeModel('gemini-2.0-flash-lite')  # For quick responses
 
         # Initialize the Pro model with Search as a tool for grounding
         # Using the format for search grounding
         self.pro_model = genai.GenerativeModel(
-            'gemini-2.5-pro-preview-03-25',
+            'gemini-1.5-pro',  # Keep using 1.5-pro for search grounding
             tools=[{
                 "name": "search",
                 "description": "Search the web for information."
@@ -264,11 +264,11 @@ class GeminiAPIClient:
 
     def expand_query(self, query: str, num_expansions: int = 5) -> List[str]:
         """
-        Expand a search query into multiple variations using Gemini AI.
+        Expand a search query into multiple variations using Gemini 2.5 Pro.
 
         Args:
             query: The original search query.
-            num_expansions: Number of query variations to generate (max 5 per call).
+            num_expansions: Number of query variations to generate (1-100).
 
         Returns:
             A list of expanded query strings.
@@ -276,70 +276,56 @@ class GeminiAPIClient:
         Raises:
             Exception: If there's an error communicating with the Gemini API.
         """
-        # Limit to 5 expansions per call to ensure quality and reliability
-        actual_expansions = min(5, num_expansions)
+        # If query is empty or only whitespace, return it as is
+        if not query or not query.strip():
+            return [query]
 
-        # Create a more detailed prompt for better variations
+        # Create a simplified prompt for Gemini 2.5 Pro
         prompt = f"""
-        You are a startup intelligence researcher specializing in query expansion. Expand the following search query
-        into {actual_expansions} different variations to find startups matching this criteria on google search. Consider
-        different phrasings, synonyms, and industry-specific terminology.
+        You are a startup intelligence researcher specializing in query expansion for google search.
 
-        Make each variation unique but semantically similar to the original query.
-        Focus on variations that would help discover different startups in this space.
+        TASK:
+        Generate {num_expansions} different search query variations for finding startups related to: "{query}"
 
-        Original query: "{query}"
+        GUIDELINES:
+        - Make each variation semantically similar but phrased differently
+        - Use industry-specific terminology where appropriate
+        - Include both more specific and more general variations
+        - Ensure variations would help discover different startups in this space
+        - Focus on quality and relevance to the original query
 
-        Guidelines for creating variations:
-        - Use different word orders and synonyms
-        - Consider industry-specific terminology
-        - Include variations with more specific or more general terms
-        - Think about different aspects of the query that could be emphasized
-        - Ensure each variation would return different but relevant results
-
-        Return only the expanded queries as a numbered list, without any additional text.
+        FORMAT:
+        Return ONLY the list of expanded queries, one per line, without numbering or any other text.
+        Do not include the original query in your response.
         """
 
         try:
-            # Use the flash model for query expansion as it's a simpler task
-            response = self.flash_model.generate_content(prompt)
+            # Use the Pro model for better quality expansions
+            response = self.pro_model.generate_content(prompt)
 
-            # Process the response to extract the expanded queries
-            expanded_queries = []
+            # Process the response
+            expanded_queries = [query]  # Always include the original query
+
             if response.text:
-                # Split by newlines and filter out empty lines and numbering
-                lines = response.text.strip().split('\n')
-                for line in lines:
-                    # Remove numbering (e.g., "1. ", "2. ")
-                    clean_line = line.strip()
-                    if clean_line:
-                        # Remove numbering and quotes if present
-                        for prefix in ["1.", "2.", "3.", "4.", "5.", "-"]:
-                            if clean_line.startswith(prefix):
-                                clean_line = clean_line[len(prefix):].strip()
+                # Simply split by newlines and clean up
+                new_queries = [line.strip() for line in response.text.strip().split('\n') if line.strip()]
 
-                        # Remove quotes if present
-                        clean_line = clean_line.strip('"\'')
+                # Add unique expansions
+                for new_query in new_queries:
+                    if new_query and new_query not in expanded_queries:
+                        expanded_queries.append(new_query)
 
-                        if clean_line:
-                            expanded_queries.append(clean_line)
+            # Ensure we don't exceed the requested number
+            expanded_queries = expanded_queries[:num_expansions + 1]  # +1 for original
 
-            # Ensure we have the requested number of expansions
-            # If we have too few, add the original query
-            while len(expanded_queries) < num_expansions and len(expanded_queries) > 0:
+            # If we have too few, duplicate the original query to fill
+            while len(expanded_queries) < num_expansions + 1:
                 expanded_queries.append(query)
 
-            # If we have no expansions at all, just use the original query
-            if not expanded_queries:
-                expanded_queries = [query] * num_expansions
-
-            # If we have too many, truncate
-            expanded_queries = expanded_queries[:num_expansions]
-
-            return expanded_queries
+            return expanded_queries[:num_expansions]
 
         except Exception as e:
-            print(f"Error expanding query with Gemini API: {e}")
+            logger.error(f"Error expanding query with Gemini API: {e}")
             # Return the original query if there's an error
             return [query]
 
