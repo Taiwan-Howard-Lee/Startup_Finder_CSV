@@ -14,6 +14,7 @@ google-auth>=2.22.0
 # Data processing
 beautifulsoup4>=4.11.0
 lxml>=4.9.0
+html2text>=2020.1.16
 
 # Web scraping
 crawl4ai>=0.6.0  # LLM-friendly web crawler

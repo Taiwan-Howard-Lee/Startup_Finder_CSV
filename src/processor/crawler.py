@@ -35,6 +35,7 @@ from urllib3.util.retry import Retry
 # Import our data extractors
 from src.processor.linkedin_extractor import LinkedInExtractor
 from src.processor.website_extractor import WebsiteExtractor
+from src.utils.text_cleaner import TextCleaner
 
 # Disable SSL verification warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -168,7 +169,7 @@ class RobotsTxtChecker:
                 parser.set_url(robots_url)
                 try:
                     # Use requests instead of urllib to handle SSL issues
-                    response = requests.get(robots_url, timeout=5, verify=False)
+                    response = requests.get(robots_url, timeout=10, verify=False)  # Doubled timeout from 5 to 10 seconds
                     if response.status_code == 200:
                         parser.parse(response.text.splitlines())
                     else:
@@ -232,13 +233,14 @@ class GoogleSearchDataSource(DataSource):
         if not self.api_key or not self.cx_id:
             logger.warning("Google Search API key or CX ID not set. Set GOOGLE_SEARCH_API_KEY and GOOGLE_CX_ID environment variables.")
 
-    def search(self, query: str, max_results: int = 10) -> List[Dict[str, Any]]:
+    def search(self, query: str, max_results: int = 10, start_index: int = 0) -> List[Dict[str, Any]]:
         """
         Search for information using Google Search API.
 
         Args:
             query: Search query.
             max_results: Maximum number of results to return.
+            start_index: Starting index for search results (for pagination/batching).
 
         Returns:
             List of search results.
@@ -256,11 +258,12 @@ class GoogleSearchDataSource(DataSource):
                 "key": self.api_key,
                 "cx": self.cx_id,
                 "q": query,
-                "num": min(10, max_results)  # API allows max 10 results per request
+                "num": min(10, max_results),  # API allows max 10 results per request
+                "start": start_index + 1  # Google API uses 1-based indexing
             }
 
             # Make the request
-            response = requests.get(base_url, params=params, timeout=10)
+            response = requests.get(base_url, params=params, timeout=20)  # Doubled timeout from 10 to 20 seconds
             response.raise_for_status()
 
             # Parse the response
@@ -308,6 +311,9 @@ class GeminiDataSource(DataSource):
         else:
             self.api_client = api_client
 
+        # Initialize text cleaner
+        self.text_cleaner = TextCleaner()
+
         logger.info("Initialized Gemini data source")
 
     def extract_startup_names(self, title: str, snippet: str, url: str, original_query: str = "") -> List[str]:
@@ -337,7 +343,7 @@ class GeminiDataSource(DataSource):
         async def crawl_page():
             async with AsyncWebCrawler() as crawler:
                 config = CrawlerRunConfig(
-                    page_timeout=30000,  # 30 seconds timeout
+                    page_timeout=60000,  # 60 seconds timeout (doubled from 30 seconds)
                     wait_until='domcontentloaded',
                     magic=True  # Enable magic mode for better extraction
                 )
@@ -348,9 +354,11 @@ class GeminiDataSource(DataSource):
         try:
             page_content = asyncio.run(crawl_page())
 
-            # Log successful crawl
+            # Clean and log successful crawl
             if page_content:
-                logger.info(f"Crawl4AI successfully retrieved content from {url}")
+                # Clean the content using TextCleaner
+                page_content = self.text_cleaner.process_content(page_content, "text")
+                logger.info(f"Crawl4AI successfully retrieved and cleaned content from {url}")
                 logger.info(f"Content length: {len(page_content)} characters")
                 logger.info(f"Content preview: {page_content[:500]}...")
         except Exception as e:
@@ -383,31 +391,21 @@ class GeminiDataSource(DataSource):
                 }
 
                 # Make the request
-                response = session.get(url, headers=headers, timeout=15, verify=False)
+                response = session.get(url, headers=headers, timeout=30, verify=False)  # Doubled timeout from 15 to 30 seconds
                 response.raise_for_status()
 
-                # Parse the HTML with Beautiful Soup
-                soup = BeautifulSoup(response.text, "lxml")
+                # Use TextCleaner to extract and clean HTML content
+                page_content = self.text_cleaner.extract_text_from_html(response.text)
 
-                # Extract text content
-                # Remove script and style elements
-                for script in soup(["script", "style", "nav", "footer", "header"]):
-                    script.extract()
-
-                # Get text
-                text = soup.get_text(separator="\n", strip=True)
-
-                # Clean up text
-                lines = [line.strip() for line in text.splitlines() if line.strip()]
-                page_content = "\n".join(lines)
-
-                logger.info(f"Beautiful Soup successfully extracted content from {url}")
+                logger.info(f"Beautiful Soup with TextCleaner successfully extracted content from {url}")
                 logger.info(f"Content length: {len(page_content)} characters")
                 logger.info(f"Content preview: {page_content[:500]}...")
             except Exception as e:
                 logger.error(f"Beautiful Soup extraction failed for {url}: {e}")
                 logger.warning(f"All extraction methods failed, falling back to search snippet")
-                page_content = f"Title: {title}\nDescription: {snippet}\nURL: {url}"
+                # Clean the fallback content
+                fallback_content = f"Title: {title}\nDescription: {snippet}\nURL: {url}"
+                page_content = self.text_cleaner.clean_text(fallback_content)
 
         # Create a more explicit prompt for Gemini with the full page content
         prompt = f"""
@@ -531,37 +529,102 @@ class GeminiDataSource(DataSource):
             # Create a list of names for the prompt
             names_str = "\n".join([f"- {name}" for name in names])
 
-            # Create a prompt for the Pro model to do deep thinking
-            prompt = f"""
-            I have a list of potential startup names that were extracted from search results for the query: "{original_query}"
+            # Check if the query is related to Diamond-like Carbon (DLC)
+            is_dlc_related = any(term in original_query.lower() for term in ["dlc", "diamond-like carbon", "diamond like carbon"])
 
-            Here's the list of potential startup names:
-            {names_str}
+            # Create a specialized prompt for DLC-related queries
+            if is_dlc_related:
+                prompt = f"""
+                I have a list of potential company names that were extracted from search results for the query: "{original_query}"
 
-            As a startup intelligence analyst, I need you to identify which of these are GENUINE STARTUPS or EARLY-STAGE COMPANIES that are DIRECTLY RELEVANT to the search query: "{original_query}".
+                Here's the list of potential company names:
+                {names_str}
 
-            DEFINITION OF A STARTUP:
-            - Focused on innovation, growth, and scalability
-            - Typically developing new technologies, products, or business models
-            - Usually smaller than established corporations
+                As a materials science and coating technology analyst, I need you to identify which of these are GENUINE COMPANIES that are DIRECTLY RELEVANT to Diamond-like Carbon (DLC) technology.
 
-            RELEVANCE CRITERIA:
-            - The startup's core business, products, or services must directly relate to "{original_query}"
-            - The startup should be operating in the industry or solving problems mentioned in the query
-            - The startup should be targeting the market or audience implied by the query
+                DEFINITION OF DLC-RELEVANT COMPANIES:
+                - Companies that manufacture, apply, or develop DLC coatings
+                - Companies that provide DLC coating services or equipment
+                - Companies that develop or use DLC technology in their products
+                - Companies that research or innovate in the field of DLC coatings
+                - Companies that supply materials or components for DLC coating processes
 
-            FILTERING INSTRUCTIONS:
-            1. ONLY include ACTUAL STARTUPS that exist in the real world (not fictional examples or UI elements)
-            2. ONLY include startups that are RELEVANT to "{original_query}"
-            3. Exclude established large corporations unless they are specifically relevant to the query
-            4. Exclude names that are clearly website sections, UI elements, or malformed extractions
-            5. Exclude generic terms, common phrases, or names that don't represent actual companies
+                RELEVANCE CRITERIA:
+                - The company's core business, products, or services must directly relate to DLC technology
+                - The company should be operating in industries that use DLC coatings (automotive, aerospace, medical, tooling, etc.)
+                - The company should be providing actual products or services, not just research or academic institutions
 
-            RESPONSE FORMAT:
-            Return ONLY the names of LEGITIMATE STARTUPS that are RELEVANT to the query as a comma-separated list.
-            If you're unsure about a name, err on the side of exclusion.
-            If none of them appear to be legitimate startups relevant to the query, return "No relevant startups found".
-            """
+                FILTERING INSTRUCTIONS:
+                1. ONLY include ACTUAL COMPANIES that exist in the real world (not fictional examples or UI elements)
+                2. ONLY include companies that are RELEVANT to DLC technology
+                3. Include both startups and established corporations if they are specifically relevant to DLC
+                4. Exclude names that are clearly website sections, UI elements, or malformed extractions
+                5. Exclude generic terms, common phrases, or names that don't represent actual companies
+                6. Exclude academic institutions, research labs, and government agencies unless they have a commercial DLC product
+                7. Exclude companies that are only tangentially related to materials science but don't work with DLC
+
+                EXAMPLES OF RELEVANT COMPANIES:
+                - Oerlikon Balzers (provides DLC coating services)
+                - IBC Coatings Technologies (specializes in DLC coatings)
+                - Calico Coatings (offers DLC coating services)
+                - Richter Precision (provides DLC coating services)
+                - Vapor Technologies (manufactures DLC coating equipment)
+
+                EXAMPLES OF IRRELEVANT ENTRIES:
+                - LinkedIn (social media platform)
+                - Google (search engine)
+                - Cookiebot (website tool)
+                - "Based on the content of the provided URL" (not a company)
+                - "Therefore, the result is:" (not a company)
+
+                RESPONSE FORMAT:
+                Return ONLY the names of LEGITIMATE COMPANIES that are RELEVANT to DLC technology as a comma-separated list.
+                If you're unsure about a name, err on the side of exclusion.
+                If none of them appear to be legitimate DLC-related companies, return "No relevant companies found".
+                """
+            else:
+                # Standard prompt for non-DLC queries with examples
+                prompt = f"""
+                I have a list of potential startup names that were extracted from search results for the query: "{original_query}"
+
+                Here's the list of potential startup names:
+                {names_str}
+
+                As a startup intelligence analyst, I need you to identify which of these are GENUINE STARTUPS or EARLY-STAGE COMPANIES that are DIRECTLY RELEVANT to the search query: "{original_query}".
+
+                DEFINITION OF A STARTUP:
+                - Focused on innovation, growth, and scalability
+                - Typically developing new technologies, products, or business models
+                - Usually smaller than established corporations
+
+                RELEVANCE CRITERIA:
+                - The startup's core business, products, or services must directly relate to "{original_query}"
+                - The startup should be operating in the industry or solving problems mentioned in the query
+                - The startup should be targeting the market or audience implied by the query
+
+                FILTERING INSTRUCTIONS:
+                1. ONLY include ACTUAL STARTUPS that exist in the real world (not fictional examples or UI elements)
+                2. ONLY include startups that are RELEVANT to "{original_query}"
+                3. Exclude established large corporations unless they are specifically relevant to the query
+                4. Exclude names that are clearly website sections, UI elements, or malformed extractions
+                5. Exclude generic terms, common phrases, or names that don't represent actual companies
+                6. Exclude academic institutions, research labs, and government agencies unless they have a commercial product
+
+                EXAMPLES OF IRRELEVANT ENTRIES:
+                - LinkedIn (social media platform)
+                - Google (search engine)
+                - Cookiebot (website tool)
+                - "Based on the content of the provided URL" (not a company)
+                - "Therefore, the result is:" (not a company)
+                - "The following names are likely real companies:" (not a company)
+                - "Ltd." (incomplete company name)
+                - "Inc." (incomplete company name)
+
+                RESPONSE FORMAT:
+                Return ONLY the names of LEGITIMATE STARTUPS that are RELEVANT to the query as a comma-separated list.
+                If you're unsure about a name, err on the side of exclusion.
+                If none of them appear to be legitimate startups relevant to the query, return "No relevant startups found".
+                """
 
             # Use the Pro model with search grounding for more complex reasoning
             # Note: Search grounding is configured when the model is initialized
@@ -668,7 +731,7 @@ class SimpleRequestStrategy(ContentExtractionStrategy):
             response = req_session.get(
                 url,
                 headers=headers,
-                timeout=10,  # Reduced timeout for faster processing
+                timeout=20,  # Doubled timeout from 10 to 20 seconds
                 allow_redirects=True,
                 verify=False  # Disable SSL verification to avoid certificate issues
             )
@@ -716,7 +779,7 @@ class AjaxRequestStrategy(ContentExtractionStrategy):
             response = req_session.get(
                 url,
                 headers=ajax_headers,
-                timeout=15,  # Reduced timeout for faster processing (from 20)
+                timeout=30,  # Doubled timeout from 15 to 30 seconds
                 allow_redirects=True,
                 verify=False
             )
@@ -760,7 +823,7 @@ class MobileUserAgentStrategy(ContentExtractionStrategy):
             response = req_session.get(
                 url,
                 headers=mobile_headers,
-                timeout=10,  # Reduced timeout for faster processing
+                timeout=20,  # Doubled timeout from 10 to 20 seconds
                 allow_redirects=True,
                 verify=False
             )
@@ -850,6 +913,9 @@ class WebCrawler:
             "facebook": ["facebook.com", "fb.com"],
             "news": ["article", "news", "blog", "post"]
         }
+
+        # Initialize text cleaner
+        self.text_cleaner = TextCleaner()
 
         logger.info(f"Initialized WebCrawler with {max_workers} workers")
 
@@ -991,25 +1057,47 @@ class WebCrawler:
             response = self.session.get(
                 url,
                 headers=self.headers,
-                timeout=5,  # Short timeout to avoid long waits
+                timeout=10,  # Doubled timeout from 5 to 10 seconds
                 allow_redirects=True,
                 verify=False  # Disable SSL verification to avoid certificate issues
             )
             response.raise_for_status()
 
-            # Parse the HTML
-            soup = BeautifulSoup(response.text, "lxml")
+            # Check content size before processing
+            content_size = len(response.text)
+            logger.info(f"Fetched {url} with content size: {content_size} characters")
 
-            # Cache the result
-            self.cache[normalized_url] = (response.text, soup)
+            # Limit content size for better performance
+            html_content = response.text
+            if content_size > 200000:  # 200K character limit
+                logger.warning(f"Content too large ({content_size} chars) for {url}. Truncating to 200K chars.")
+                html_content = html_content[:200000]
+
+            # Parse the HTML
+            soup = BeautifulSoup(html_content, "lxml")
+
+            # Special handling for Hacker News content
+            if "news.ycombinator.com" in url:
+                logger.info(f"Detected Hacker News content for {url}, applying special cleaning")
+                # Clean the HTML content with special handling for Hacker News
+                cleaned_html = self.text_cleaner.extract_text_from_html(html_content)
+
+                # Log the size reduction
+                logger.info(f"Cleaned content size: {len(cleaned_html)} characters (reduced from {content_size})")
+            else:
+                # Clean the HTML content
+                cleaned_html = self.text_cleaner.extract_text_from_html(html_content)
+
+            # Cache the result - store both raw and cleaned content
+            self.cache[normalized_url] = (cleaned_html, soup)
 
             # Record metrics
             if metrics_collector:
                 processing_time = time.time() - start_time
-                metrics_collector.add_processed_url(url, processing_time)
+                metrics_collector.add_processed_url(url, processing_time, cleaned_html)
 
-            logger.info(f"Successfully fetched {url} with primary method")
-            return response.text, soup
+            logger.info(f"Successfully fetched and cleaned {url} with primary method")
+            return cleaned_html, soup
 
         except Exception as e:
             # If the primary method fails, try with Beautiful Soup as a fallback
@@ -1042,19 +1130,41 @@ class WebCrawler:
                 response = fallback_session.get(
                     url,
                     headers=fallback_headers,
-                    timeout=15,
+                    timeout=30,  # Doubled timeout from 15 to 30 seconds
                     verify=False,
                     allow_redirects=True
                 )
                 response.raise_for_status()
 
-                # Parse the HTML
-                soup = BeautifulSoup(response.text, "lxml")
+                # Check content size before processing
+                content_size = len(response.text)
+                logger.info(f"Fetched {url} with content size: {content_size} characters (fallback method)")
 
-                # Cache the result
-                self.cache[normalized_url] = (response.text, soup)
-                logger.info(f"Successfully fetched {url} with Beautiful Soup fallback")
-                return response.text, soup
+                # Limit content size for better performance
+                html_content = response.text
+                if content_size > 200000:  # 200K character limit
+                    logger.warning(f"Content too large ({content_size} chars) for {url}. Truncating to 200K chars.")
+                    html_content = html_content[:200000]
+
+                # Parse the HTML
+                soup = BeautifulSoup(html_content, "lxml")
+
+                # Special handling for Hacker News content
+                if "news.ycombinator.com" in url:
+                    logger.info(f"Detected Hacker News content for {url}, applying special cleaning (fallback method)")
+                    # Clean the HTML content with special handling for Hacker News
+                    cleaned_html = self.text_cleaner.extract_text_from_html(html_content)
+
+                    # Log the size reduction
+                    logger.info(f"Cleaned content size: {len(cleaned_html)} characters (reduced from {content_size})")
+                else:
+                    # Clean the HTML content using TextCleaner
+                    cleaned_html = self.text_cleaner.extract_text_from_html(html_content)
+
+                # Cache the result - store both cleaned content and soup
+                self.cache[normalized_url] = (cleaned_html, soup)
+                logger.info(f"Successfully fetched and cleaned {url} with Beautiful Soup fallback")
+                return cleaned_html, soup
 
             except Exception as fallback_e:
                 # If both methods fail, log the error and return None
@@ -1291,13 +1401,14 @@ class StartupCrawler:
 
         logger.info(f"Initialized StartupCrawler with {max_workers} workers")
 
-    def discover_startups(self, query: str, max_results: int = 10, metrics_collector: Optional["MetricsCollector"] = None) -> List[Dict[str, Any]]:
+    def discover_startups(self, query: str, max_results: int = 10, start_index: int = 0, metrics_collector: Optional["MetricsCollector"] = None) -> List[Dict[str, Any]]:
         """
         Phase 1: Discover startup names based on the query.
 
         Args:
             query: Search query.
             max_results: Maximum number of startup names to discover.
+            start_index: Starting index for search results (for pagination/batching).
             metrics_collector: Optional metrics collector.
 
         Returns:
@@ -1309,8 +1420,8 @@ class StartupCrawler:
             metrics_collector.add_query(query)
             metrics_collector.google_api_calls += 1
 
-        # Step 1: Search for articles about startups
-        search_results = self.google_search.search(query, max_results=max_results)
+        # Step 1: Search for articles about startups with start_index for pagination/batching
+        search_results = self.google_search.search(query, max_results=max_results, start_index=start_index)
 
         # Step 2: Extract startup names from search results using parallel processing
         all_validated_names = []
@@ -1322,7 +1433,8 @@ class StartupCrawler:
         url_to_result_map = {}
 
         for result in search_results:
-            url = result.get("url", "")
+            # Check for both "url" and "link" keys to handle different search client implementations
+            url = result.get("url", result.get("link", ""))
             if url:
                 urls_to_fetch.append(url)
                 url_to_result_map[url] = result
@@ -1390,6 +1502,114 @@ class StartupCrawler:
 
         return startup_info_list
 
+    # Funding information extraction has been removed
+
+    def _is_likely_startup_name(self, name: str) -> bool:
+        """
+        Quick check to filter out common words that are unlikely to be startup names.
+
+        Args:
+            name: The potential startup name to check
+
+        Returns:
+            bool: True if the name could be a startup, False if it's likely not
+        """
+        # Convert to lowercase for comparison
+        name_lower = name.lower()
+
+        # List of common words that are unlikely to be startup names
+        common_words = [
+            "share", "click", "view", "read", "more", "next", "previous", "home", "about",
+            "contact", "services", "products", "login", "sign", "register", "search",
+            "menu", "navigation", "footer", "header", "copyright", "privacy", "terms",
+            "policy", "cookies", "subscribe", "follow", "like", "comment", "download",
+            "upload", "submit", "cancel", "continue", "back", "forward", "help", "support",
+            "faq", "frequently", "asked", "questions", "blog", "news", "events", "careers",
+            "jobs", "apply", "join", "team", "staff", "management", "board", "directors",
+            "investors", "partners", "clients", "customers", "users", "members", "community"
+        ]
+
+        # Check if the name is a common word
+        if name_lower in common_words:
+            return False
+
+        # Check if the name is too short (likely an abbreviation or common word)
+        if len(name) <= 2:
+            return False
+
+        # Check if the name contains common UI text patterns
+        ui_patterns = ["click here", "read more", "learn more", "sign up", "log in"]
+        if any(pattern in name_lower for pattern in ui_patterns):
+            return False
+
+        # If it passed all filters, it might be a startup name
+        return True
+
+    def _extract_keyword_relevance(self, startup_name: str, context: str, original_query: str, metrics_collector: Optional["MetricsCollector"] = None):
+        """
+        Extract keyword relevance from context.
+
+        Args:
+            startup_name: The startup name
+            context: The context paragraph
+            original_query: The original search query
+            metrics_collector: Metrics collector instance
+        """
+        # EMERGENCY FIX: Skip all keyword relevance extraction for "Share" to prevent excessive processing
+        if startup_name.lower() == "share":
+            return
+
+        # Skip processing for unlikely startup names to save time
+        if not self._is_likely_startup_name(startup_name):
+            return
+
+        # Skip if any required parameters are missing
+        if not metrics_collector or not context or not original_query:
+            return
+
+        # Skip if the context is too large (over 10,000 characters)
+        if len(context) > 10000:
+            # Just add a minimal relevance score and return
+            metrics_collector.add_keyword_relevance(startup_name, "relevant", 0.5)
+            return
+
+        try:
+            # Extract keywords from the original query
+            query_keywords = original_query.lower().split()
+            query_keywords = [kw for kw in query_keywords if len(kw) > 3 and kw not in ["and", "the", "for", "with"]]
+
+            # Use a smaller set of industry-specific keywords to reduce processing
+            industry_keywords = [
+                "technology", "ai", "software", "biotech", "fintech",
+                "energy", "healthcare", "climate", "sustainable",
+                "data", "platform", "marketplace"
+            ]
+
+            # Combine all keywords
+            all_keywords = set(query_keywords + industry_keywords)
+
+            # Calculate relevance scores - limit to max 5 keywords to reduce processing
+            context_lower = context.lower()
+            keyword_count = 0
+            for keyword in all_keywords:
+                if keyword_count >= 5:
+                    break
+
+                if keyword in context_lower:
+                    # Simple relevance score based on frequency
+                    count = context_lower.count(keyword)
+                    score = min(1.0, count / 10.0)  # Cap at 1.0
+
+                    # Add the keyword relevance to the metrics collector
+                    metrics_collector.add_keyword_relevance(startup_name, keyword, score)
+                    keyword_count += 1
+
+            # Only log for non-common words to reduce log spam
+            if startup_name.lower() not in ["share", "view", "click", "read", "more"]:
+                logger.info(f"Extracted keyword relevance for {startup_name}")
+        except Exception as e:
+            logger.error(f"Error extracting keyword relevance for {startup_name}: {e}")
+
     def _process_search_result(self, url: str, title: str, snippet: str, raw_html: str, soup: BeautifulSoup,
                           original_query: str = "", metrics_collector: Optional["MetricsCollector"] = None) -> Tuple[List[str], Dict[str, Any]]:
         """
@@ -1405,22 +1625,73 @@ class StartupCrawler:
             metrics_collector: Optional metrics collector.
 
         Returns:
-            Tuple of (validated_names, source_info).
+            Tuple of (filtered_names, source_info).
         """
+        # Skip processing for certain URLs that are likely to contain many false positives
+        skip_domains = ["facebook.com", "twitter.com", "instagram.com", "linkedin.com/feed",
+                       "youtube.com", "pinterest.com", "reddit.com"]
+        if any(domain in url.lower() for domain in skip_domains):
+            logger.info(f"Skipping social media URL: {url}")
+            return [], {"Source": "Google Search", "Found In": title, "Original URL": url}
+
         logger.info(f"Analyzing: {title}")
 
         # Extract startup names using Gemini
         gemini_names = self.gemini.extract_startup_names(title, snippet, url, original_query)
         logger.info(f"Gemini extracted {len(gemini_names)} startup names")
 
-        # Track LLM-extracted names
+        # EMERGENCY FIX: Skip processing if "Share" is the only name extracted
+        if len(gemini_names) == 1 and gemini_names[0].lower() == "share":
+            logger.info("Skipping processing for 'Share' only result")
+            return [], {"Source": "Google Search", "Found In": title, "Original URL": url}
+
+        # Pre-filter names to reduce processing time - more aggressive filtering
+        pre_filtered_names = []
+        for name in gemini_names:
+            # Skip common words completely
+            if name.lower() in ["share", "view", "click", "read", "more", "next", "previous"]:
+                continue
+
+            # Apply the full filtering
+            if self._is_likely_startup_name(name):
+                pre_filtered_names.append(name)
+
+        # Log how many names were filtered out
+        if len(gemini_names) > len(pre_filtered_names):
+            logger.info(f"Pre-filtered {len(gemini_names) - len(pre_filtered_names)} unlikely startup names")
+
+        # Use the pre-filtered names for further processing
+        gemini_names = pre_filtered_names
+
+        # If no names remain after filtering, return early
+        if not gemini_names:
+            logger.info("No valid startup names after filtering")
+            return [], {"Source": "Google Search", "Found In": title, "Original URL": url}
+
+        # Track LLM-extracted names - limit context extraction to save processing time
         if metrics_collector:
-            for name in gemini_names:
-                metrics_collector.add_potential_startup_name(name, url)
+            # Get the content for context extraction
+            content = None
+            if url in metrics_collector.url_content_map:
+                content = metrics_collector.url_content_map[url]
+
+            # Process only up to 5 names to reduce processing time
+            for name in gemini_names[:5]:
+                # Extract context if content is available
+                context = None
+                if content:
+                    contexts = metrics_collector.extract_context_for_startup(name, url)
+                    if contexts:
+                        context = contexts[0]  # Use the first occurrence
+
+                        # Extract keyword relevance from context
+                        self._extract_keyword_relevance(name, context, original_query, metrics_collector)
+
+                metrics_collector.add_potential_startup_name(name, url, context)
                 metrics_collector.add_llm_extracted_name(name)
                 metrics_collector.gemini_api_calls += 1
 
-        # Validate startup names using Gemini
+        # Validate startup names using Gemini - only if we have names after pre-filtering
         validated_names = []
         if gemini_names:
             validated_names = self.gemini.validate_startup_names(gemini_names, url)
@@ -1432,6 +1703,20 @@ class StartupCrawler:
                     metrics_collector.add_validated_name(name)
                 metrics_collector.gemini_api_calls += 1
 
+        # Filter validated names based on relevance to the original query
+        filtered_names = []
+        if validated_names and original_query:
+            filtered_names = self.gemini.filter_relevant_startups(validated_names, original_query)
+            logger.info(f"Gemini filtered {len(filtered_names)} relevant startup names")
+
+            # Track filtered names
+            if metrics_collector:
+                for name in filtered_names:
+                    metrics_collector.add_filtered_name(name)
+                metrics_collector.gemini_api_calls += 1
+        else:
+            filtered_names = validated_names
+
         # Create source info
         source_info = {
             "Source": "Google Search",
@@ -1439,7 +1724,7 @@ class StartupCrawler:
             "Original URL": url
         }
 
-        return validated_names, source_info
+        return filtered_names, source_info
 
     def enrich_startup_data(self, startup_info_list: List[Dict[str, Any]], max_results_per_startup: int = 3,
                           metrics_collector: Optional["MetricsCollector"] = None) -> List[Dict[str, Any]]:
@@ -1542,7 +1827,8 @@ class StartupCrawler:
         url_to_result_map = {}
 
         for result in search_results:
-            url = result.get("url", "")
+            # Check for both "url" and "link" keys to handle different search client implementations
+            url = result.get("url", result.get("link", ""))
             if url:
                 urls_to_fetch.append(url)
                 url_to_result_map[url] = result
@@ -1618,7 +1904,8 @@ class StartupCrawler:
                 website_query = f"{name} official website"
                 website_results = self.google_search.search(website_query, max_results=1)
                 if website_results:
-                    official_url = website_results[0].get("url", "")
+                    # Check for both "url" and "link" keys
+                    official_url = website_results[0].get("url", website_results[0].get("link", ""))
                     if official_url and name.lower() in official_url.lower():
                         merged_data["Website"] = official_url
             except Exception as e:

@@ -79,18 +79,11 @@ class GeminiAPIClient:
         # Initialize the Gemini API
         genai.configure(api_key=self.api_key)
 
-        # Use the specified models
-        self.flash_model = genai.GenerativeModel('gemini-2.0-flash-lite')  # For quick responses
+        # Use Gemini 2.0 Flash for most operations
+        self.flash_model = genai.GenerativeModel('gemini-2.0-flash')  # For most responses
 
-        # Initialize the Pro model with Search as a tool for grounding
-        # Using the format for search grounding
-        self.pro_model = genai.GenerativeModel(
-            'gemini-1.5-pro',  # Keep using 1.5-pro for search grounding
-            tools=[{
-                "name": "search",
-                "description": "Search the web for information."
-            }]
-        )      # For deep thinking with search grounding
+        # Use Gemini 2.5 Flash for query expansion and other advanced tasks
+        self.pro_model = genai.GenerativeModel('gemini-2.5-flash-preview-05-20')  # For query expansion and validation
 
         # Set up response validation parameters
         self.expected_field_types = {
@@ -264,11 +257,14 @@ class GeminiAPIClient:
 
     def expand_query(self, query: str, num_expansions: int = 5) -> List[str]:
         """
-        Expand a search query into multiple variations using Gemini 2.5 Pro.
+        Expand a search query into multiple variations using Gemini 2.5 Flash.
+
+        Uses Gemini 2.5 Flash for all query expansions to maximize semantic diversity
+        and ensure each query targets a different aspect of the search space.
 
         Args:
             query: The original search query.
-            num_expansions: Number of query variations to generate (1-100).
+            num_expansions: Number of query variations to generate. No upper limit.
 
         Returns:
             A list of expanded query strings.
@@ -280,19 +276,26 @@ class GeminiAPIClient:
         if not query or not query.strip():
             return [query]
 
-        # Create a simplified prompt for Gemini 2.5 Pro
+        # Create an enhanced prompt for Gemini 2.5 Flash with diversity optimization
         prompt = f"""
-        You are a startup intelligence researcher specializing in query expansion for google search.
+        You are a startup intelligence researcher specializing in query expansion for Google search.
 
         TASK:
         Generate {num_expansions} different search query variations for finding startups related to: "{query}"
 
         GUIDELINES:
-        - Make each variation semantically similar but phrased differently
+        - Maximize DIVERSITY in the search vector space - each query should target a different aspect or dimension
+        - Avoid semantic overlap between queries - each should retrieve a substantially different set of results
+        - Consider different:
+          * Industry verticals (energy, mobility, social tech, etc.)
+          * Geographic focuses (specific regions, urban/rural)
+          * Technology approaches (hardware, software, services)
+          * Business models (B2B, B2C, marketplace)
+          * Company stages (early-stage, growth, established)
+          * Funding status (bootstrapped, seed, venture-backed)
         - Use industry-specific terminology where appropriate
-        - Include both more specific and more general variations
-        - Ensure variations would help discover different startups in this space
-        - Focus on quality and relevance to the original query
+        - Include both specific and general variations, but ensure they target different result sets
+        - Prioritize queries that would yield unique startups not found by other queries
 
         FORMAT:
         Return ONLY the list of expanded queries, one per line, without numbering or any other text.
@@ -300,8 +303,10 @@ class GeminiAPIClient:
         """
 
         try:
-            # Use the Pro model for better quality expansions
+            # Use Gemini 2.5 Flash for query expansions
+            logger.info("Using Gemini 2.5 Flash for query expansion...")
             response = self.pro_model.generate_content(prompt)
+            logger.info("Successfully used Gemini 2.5 Flash for query expansion")
 
             # Process the response
             expanded_queries = [query]  # Always include the original query
@@ -315,13 +320,11 @@ class GeminiAPIClient:
                     if new_query and new_query not in expanded_queries:
                         expanded_queries.append(new_query)
 
-            # Ensure we don't exceed the requested number
-            expanded_queries = expanded_queries[:num_expansions + 1]  # +1 for original
-
             # If we have too few, duplicate the original query to fill
             while len(expanded_queries) < num_expansions + 1:
                 expanded_queries.append(query)
 
+            # Return all expansions up to the requested number
             return expanded_queries[:num_expansions]
 
         except Exception as e:
@@ -533,10 +536,43 @@ class GeminiAPIClient:
             If a startup is not relevant to the query, remove it completely from the results.
             """
 
-            # Note: Search grounding is configured when the model is initialized
+            # Configure search grounding for Gemini 2.0 Flash
+            safety_settings = [
+                {
+                    "category": "HARM_CATEGORY_HARASSMENT",
+                    "threshold": "BLOCK_NONE"
+                },
+                {
+                    "category": "HARM_CATEGORY_HATE_SPEECH",
+                    "threshold": "BLOCK_NONE"
+                },
+                {
+                    "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    "threshold": "BLOCK_NONE"
+                },
+                {
+                    "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                    "threshold": "BLOCK_NONE"
+                }
+            ]
 
-            # Get response from Gemini Pro with search grounding
-            response = api_client.pro_model.generate_content(prompt)
+            generation_config = {
+                "temperature": 0.2,
+                "top_p": 0.95,
+                "top_k": 64,
+                "max_output_tokens": 8192,
+            }
+
+            # Use Gemini 2.0 Flash with search grounding for validation
+            model = genai.GenerativeModel(
+                model_name='gemini-2.0-flash',
+                generation_config=generation_config,
+                safety_settings=safety_settings,
+                tools=[{"web_search": {}}]  # Enable search grounding
+            )
+
+            # Get response from Gemini 2.0 Flash with search grounding
+            response = model.generate_content(prompt)
 
             # Extract JSON from response
             try:
@@ -571,6 +607,176 @@ class GeminiAPIClient:
 
         logger.info(f"Successfully validated {len(results)} startups")
         return results
+
+    def validate_startups_chunk(self, chunk_text: str, query: str, startup_indices: List[int]) -> Dict[str, Any]:
+        """
+        Validate a chunk of startup data using Gemini 2.0 Flash.
+
+        This method is designed to work with the ContentProcessor's chunking functionality.
+
+        Args:
+            chunk_text: The text chunk containing startup data.
+            query: The original search query.
+            startup_indices: List of indices of startups in the original list.
+
+        Returns:
+            Dictionary with validated startup data and metadata.
+        """
+        logger.info(f"Validating chunk with {len(startup_indices)} startups")
+
+        # Create prompt for Gemini
+        prompt = f"""
+        You are a startup intelligence analyst specializing in data validation and enrichment.
+        I have a dataset of startups related to the search query: "{query}".
+
+        TASK:
+        Analyze the following startup data to:
+        1. VERIFY each startup is RELEVANT to the query
+        2. CORRECT any anomalies, inconsistencies, or inaccuracies
+        3. FILL IN missing information where possible
+        4. STANDARDIZE formatting across all entries
+
+        STARTUP RELEVANCE CRITERIA:
+        - The startup's core business, products, or services must directly relate to query
+        - The startup should be operating in the industry or solving problems mentioned in the query
+        - The startup should be targeting the market or audience implied by the query
+
+        DATA VALIDATION GUIDELINES:
+        - Company Name: Ensure correct spelling and proper capitalization
+        - Website: Verify it's the official company website (not social media or third-party sites)
+        - LinkedIn: Ensure it's the correct company LinkedIn page
+        - Location: Standardize format (City, State/Region, Country)
+        - Founded Year: Verify accuracy and use 4-digit year format
+        - Industry: Use specific, standardized industry categories
+        - Company Size: Standardize format (e.g., "11-50 employees")
+        - Funding: Include latest round, amount, and date if available
+        - Product Description: Ensure it accurately describes what the company does
+
+        DATA TO VALIDATE:
+        {chunk_text}
+
+        Return ONLY the corrected data in valid JSON format, with the same structure as the above json.
+        If a startup is not relevant to the query, remove it completely from the results.
+        """
+
+        # Configure search grounding for Gemini 2.0 Flash
+        safety_settings = [
+            {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": "BLOCK_NONE"
+            },
+            {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "threshold": "BLOCK_NONE"
+            },
+            {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "threshold": "BLOCK_NONE"
+            },
+            {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "threshold": "BLOCK_NONE"
+            }
+        ]
+
+        generation_config = {
+            "temperature": 0.2,
+            "top_p": 0.95,
+            "top_k": 64,
+            "max_output_tokens": 8192,
+        }
+
+        # Use Gemini 2.0 Flash with search grounding for validation
+        model = genai.GenerativeModel(
+            model_name='gemini-2.0-flash',
+            generation_config=generation_config,
+            safety_settings=safety_settings,
+            tools=[{"web_search": {}}]  # Enable search grounding
+        )
+
+        try:
+            # Get response from Gemini 2.0 Flash with search grounding
+            response = model.generate_content(prompt)
+
+            # Extract JSON from response
+            response_text = response.text
+            if "```json" in response_text:
+                json_content = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                json_content = response_text.split("```")[1].strip()
+            else:
+                json_content = response_text.strip()
+
+            # Parse the JSON
+            validated_data = json.loads(json_content)
+
+            # Return the validated data with metadata
+            return {
+                "validated_data": validated_data,
+                "startup_indices": startup_indices,
+                "success": True
+            }
+
+        except Exception as e:
+            logger.error(f"Error validating chunk: {e}")
+            # Return error information
+            return {
+                "error": str(e),
+                "startup_indices": startup_indices,
+                "success": False
+            }
+
+    def combine_validated_chunks(self, validated_chunks: List[Dict[str, Any]], original_startups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Combine validated chunks into a single result.
+
+        Args:
+            validated_chunks: List of dictionaries with validated startup data and metadata.
+            original_startups: The original list of startup dictionaries.
+
+        Returns:
+            List of validated startup dictionaries.
+        """
+        logger.info(f"Combining {len(validated_chunks)} validated chunks")
+
+        # Create a copy of the original startups to update
+        result_startups = original_startups.copy()
+
+        # Process each validated chunk
+        for chunk in validated_chunks:
+            # Skip failed chunks
+            if not chunk.get("success", False):
+                logger.warning(f"Skipping failed chunk: {chunk.get('error', 'Unknown error')}")
+                continue
+
+            # Get the validated data and startup indices
+            validated_data = chunk.get("validated_data", [])
+            startup_indices = chunk.get("startup_indices", [])
+
+            # If validated_data is a list, process each item
+            if isinstance(validated_data, list):
+                # Match validated startups with original startups by index
+                for i, validated_startup in enumerate(validated_data):
+                    if i < len(startup_indices):
+                        original_index = startup_indices[i]
+                        if original_index < len(result_startups):
+                            # Update the startup with validated data
+                            result_startups[original_index] = validated_startup
+                    else:
+                        # If there are more validated startups than indices, append them
+                        result_startups.append(validated_startup)
+
+            # If validated_data is a dictionary, process it as a single startup
+            elif isinstance(validated_data, dict):
+                # Update the first startup in the indices
+                if startup_indices and startup_indices[0] < len(result_startups):
+                    result_startups[startup_indices[0]] = validated_data
+
+        # Filter out any None values or empty dictionaries
+        result_startups = [s for s in result_startups if s and isinstance(s, dict)]
+
+        logger.info(f"Combined {len(result_startups)} validated startups")
+        return result_startups
 
     def extract_structured_data_batch(self, items: List[Tuple[str, str, str, List[str]]]) -> List[Dict[str, Any]]:
         """

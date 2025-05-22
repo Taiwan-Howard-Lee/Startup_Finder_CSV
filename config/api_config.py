@@ -20,39 +20,39 @@ DEFAULT_CONFIG = {
 def get_api_key() -> str:
     """
     Get the Gemini API key from environment variables.
-    
+
     Returns:
         API key string.
-        
+
     Raises:
         ValueError: If API key is not found.
     """
     api_key = os.environ.get("GEMINI_API_KEY")
-    
+
     if not api_key:
         raise ValueError(
             "Gemini API key not found. Please set the GEMINI_API_KEY "
             "environment variable."
         )
-    
+
     return api_key
 
 
 def get_config(custom_config: Dict[str, Union[int, float, bool, str]] = None) -> Dict[str, Union[int, float, bool, str]]:
     """
     Get configuration with custom overrides.
-    
+
     Args:
         custom_config: Custom configuration overrides.
-        
+
     Returns:
         Configuration dictionary.
     """
     config = DEFAULT_CONFIG.copy()
-    
+
     if custom_config:
         config.update(custom_config)
-    
+
     return config
 
 
@@ -67,7 +67,7 @@ RATE_LIMIT_CONFIG = {
 
 # Gemini API settings
 GEMINI_API_CONFIG = {
-    "model": "gemini-pro",
+    "model": "gemini-2.0-flash",
     "temperature": 0.2,
     "max_output_tokens": 1024,
     "top_p": 0.8,

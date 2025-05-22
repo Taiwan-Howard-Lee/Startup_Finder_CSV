@@ -3,6 +3,7 @@ Enhanced Startup Crawler
 
 This module provides an enhanced version of the StartupCrawler that uses
 Google Search as a proxy to extract data from LinkedIn and Crunchbase.
+It also supports API key rotation to avoid rate limits.
 """
 
 import logging
@@ -14,6 +15,9 @@ from src.processor.website_extractor import WebsiteExtractor
 from src.processor.linkedin_extractor import LinkedInExtractor
 from src.processor.crunchbase_extractor import CrunchbaseExtractor
 from src.utils.api_client import GeminiAPIClient
+from src.utils.api_key_manager import APIKeyManager
+from src.utils.enhanced_google_search_client import EnhancedGoogleSearchClient
+from src.utils.content_processor import ContentProcessor
 
 # Type checking imports
 if TYPE_CHECKING:
@@ -25,8 +29,35 @@ logger = logging.getLogger(__name__)
 class EnhancedStartupCrawler(StartupCrawler):
     """
     Enhanced version of the StartupCrawler that uses Google Search as a proxy
-    to extract data from LinkedIn and Crunchbase.
+    to extract data from LinkedIn and Crunchbase. It also supports API key rotation
+    to avoid rate limits.
     """
+
+    def __init__(self, max_workers: int = 5, key_manager: Optional[APIKeyManager] = None):
+        """Initialize the enhanced startup crawler.
+
+        Args:
+            max_workers: Maximum number of parallel workers.
+            key_manager: Optional API key manager for handling API key rotation.
+        """
+        # Initialize the parent class
+        super().__init__(max_workers=max_workers)
+
+        # Initialize the API key manager
+        self.key_manager = key_manager or APIKeyManager()
+
+        # Replace the default Google Search data source with our enhanced version
+        self.google_search = EnhancedGoogleSearchClient(key_manager=self.key_manager)
+
+        # Initialize the content processor for text cleaning and chunking
+        self.content_processor = ContentProcessor(
+            chunk_size=50000,  # Default chunk size for LLM processing
+            overlap=1000       # Default overlap between chunks
+        )
+
+        logger.info(f"Initialized EnhancedStartupCrawler with {max_workers} workers and API key rotation")
+        logger.info(f"Using {len(self.key_manager.api_keys)} API keys and {len(self.key_manager.cx_ids)} CX IDs")
+        logger.info(f"Initialized ContentProcessor with chunk_size=50000, overlap=1000")
 
     def enrich_startup_data(self, startup_info_list: List[Dict[str, Any]], max_results_per_startup: int = 10,
                           metrics_collector: Optional["MetricsCollector"] = None) -> List[Dict[str, Any]]:
@@ -328,14 +359,45 @@ class EnhancedStartupCrawler(StartupCrawler):
                 raw_html, soup = self.web_crawler.fetch_webpage(official_url)
 
                 if raw_html and soup:
-                    # Extract data using the website extractor with LLM
-                    website_data = WebsiteExtractor.extract_data(
-                        company_name=company_name,
-                        url=official_url,
-                        raw_html=raw_html,
-                        soup=soup,
-                        api_client=api_client
-                    )
+                    # Process the raw HTML with the ContentProcessor
+                    cleaned_content = self.content_processor.process_raw_content(raw_html, content_type="html")
+
+                    # If the content is large, chunk it for more efficient processing
+                    if len(cleaned_content) > 50000:
+                        logger.info(f"Content for {company_name} website is large ({len(cleaned_content)} chars), chunking for processing")
+                        chunks = self.content_processor.chunk_text(cleaned_content)
+
+                        # Process each chunk and combine the results
+                        all_website_data = {}
+                        for i, chunk in enumerate(chunks):
+                            logger.info(f"Processing chunk {i+1}/{len(chunks)} for {company_name} website")
+
+                            # Extract data from this chunk
+                            chunk_data = WebsiteExtractor.extract_data(
+                                company_name=company_name,
+                                url=official_url,
+                                raw_html=chunk,  # Use the cleaned and chunked content
+                                soup=None,       # No need for soup with cleaned content
+                                api_client=api_client,
+                                is_processed_content=True  # Flag to indicate this is already processed content
+                            )
+
+                            # Merge chunk data into all_website_data
+                            for key, value in chunk_data.items():
+                                if value and (key not in all_website_data or not all_website_data[key]):
+                                    all_website_data[key] = value
+
+                        # Use the combined data
+                        website_data = all_website_data
+                    else:
+                        # For smaller content, process directly
+                        website_data = WebsiteExtractor.extract_data(
+                            company_name=company_name,
+                            url=official_url,
+                            raw_html=raw_html,
+                            soup=soup,
+                            api_client=api_client
+                        )
 
                     # Merge the extracted data
                     for key, value in website_data.items():

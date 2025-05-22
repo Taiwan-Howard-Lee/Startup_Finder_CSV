@@ -1,0 +1,13 @@
+2025-05-22 11:36:27,645 - src.utils.startup_name_cleaner - INFO - Found 65 startup names in output/data/25.csv
+2025-05-22 11:36:27,646 - src.utils.startup_name_cleaner - INFO - Deduplicated 65 names to 65 unique startups
+2025-05-22 11:36:27,646 - src.utils.startup_name_cleaner - INFO - Wrote 65 deduplicated startups to output/data/25_deduplicated_20250522_113627.csv
+2025-05-22 11:36:27,646 - src.utils.startup_name_cleaner - INFO - Cleaned and deduplicated output/data/25.csv to output/data/25_deduplicated_20250522_113627.csv with 65 unique startups
+2025-05-22 11:38:39,105 - __main__ - INFO - Found 65 startup names in output/data/25.csv
+2025-05-22 11:38:39,106 - __main__ - ERROR - Error deduplicating with LLM: 'GeminiAPIClient' object has no attribute 'generate_content'
+2025-05-22 11:38:39,108 - __main__ - INFO - Deduplicated 65 names to 65 unique startups using basic deduplication
+2025-05-22 11:38:39,108 - __main__ - INFO - Created backup of original file: output/data/25.csv.bak
+2025-05-22 11:38:39,109 - __main__ - INFO - Wrote 65 deduplicated startups to output/data/25.csv
+2025-05-22 11:39:15,676 - __main__ - INFO - Found 65 startup names in output/data/25.csv
+2025-05-22 11:39:18,626 - __main__ - INFO - Deduplicated 65 names to 64 unique startups using LLM
+2025-05-22 11:39:18,635 - __main__ - INFO - Created backup of original file: output/data/25.csv.bak
+2025-05-22 11:39:18,636 - __main__ - INFO - Wrote 61 deduplicated startups to output/data/25.csv

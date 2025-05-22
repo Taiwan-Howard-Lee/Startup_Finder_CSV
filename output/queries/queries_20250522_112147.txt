@@ -1,0 +1,17 @@
+# Edit the queries below. Each line will be used as a separate search query.
+# Delete a line to remove that query. Add new lines to add new queries.
+# Save the file when you're done.
+# Lines starting with # are comments and will be ignored.
+
+DLC coating startups
+DLC coating startups
+thin film deposition
+Advanced materials startups 
+diamond-like carbon
+amorphous carbon
+Venture capital surface engineer
+Venture capital intribological coatings
+hard carbon coating
+DLC automotive 
+DLC aerospace
+DLC medical device startups

@@ -30,26 +30,27 @@ def export_detailed_reports(metrics_collector: MetricsCollector, base_filename: 
 
 def export_consolidated_reports(metrics_collector: MetricsCollector, base_filename: str = "startup_finder_report"):
     """
-    Export consolidated reports: one for startup data and one for all metrics.
+    Export consolidated reports: one for startup data, one for all metrics, and one for context.
 
-    This function generates just two CSV files:
+    This function generates three CSV files:
     1. A final startup list CSV with all the enriched data
     2. A comprehensive metrics report CSV with all metrics and debugging information
+    3. A context report with raw text and paragraphs where startups were mentioned
 
     Args:
         metrics_collector: The metrics collector instance.
         base_filename: Base filename for the reports.
 
     Returns:
-        Dictionary of filenames for the two reports.
+        Dictionary of filenames for the reports.
     """
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    os.makedirs("reports", exist_ok=True)
+    os.makedirs("output/reports", exist_ok=True)
 
     report_files = {}
 
     # 1. Export the final startup list with all enriched data
-    startup_data_file = f"reports/{base_filename}_startups_{timestamp}.csv"
+    startup_data_file = f"output/reports/{base_filename}_startups_{timestamp}.csv"
 
     # Get all possible fields
     all_fields = set()
@@ -76,7 +77,7 @@ def export_consolidated_reports(metrics_collector: MetricsCollector, base_filena
     report_files['startups'] = startup_data_file
 
     # 2. Export a comprehensive metrics report with all debugging information
-    metrics_file = f"reports/{base_filename}_metrics_{timestamp}.csv"
+    metrics_file = f"output/reports/{base_filename}_metrics_{timestamp}.csv"
 
     with open(metrics_file, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
@@ -100,7 +101,6 @@ def export_consolidated_reports(metrics_collector: MetricsCollector, base_filena
 
         stages = [
             ('Potential', metrics_collector.potential_startup_names),
-            ('Pattern Extracted', metrics_collector.pattern_extracted_names),
             ('LLM Extracted', metrics_collector.llm_extracted_names),
             ('Validated', metrics_collector.validated_names),
             ('Eliminated', metrics_collector.eliminated_names),
@@ -134,9 +134,7 @@ def export_consolidated_reports(metrics_collector: MetricsCollector, base_filena
             time_taken = metrics_collector.url_processing_time_map.get(url, "N/A")
             writer.writerow([url, 'Processed', time_taken])
 
-        # Blocked URLs
-        for url in metrics_collector.blocked_urls:
-            writer.writerow([url, 'Blocked by robots.txt', 'N/A'])
+        # We no longer track blocked URLs separately
 
         # Failed URLs
         for url in metrics_collector.failed_urls:
@@ -151,11 +149,101 @@ def export_consolidated_reports(metrics_collector: MetricsCollector, base_filena
         for query, startups in metrics_collector.query_startup_map.items():
             writer.writerow([query, ', '.join(sorted(startups))])
 
+        writer.writerow([])  # Empty row as separator
+
+        # SECTION 5: Trend Analysis
+        writer.writerow(['=== TREND ANALYSIS ==='])
+        writer.writerow(['Startup Name', 'Total Mentions', 'First Mention', 'Last Mention', 'Daily Mention Pattern'])
+
+        report = metrics_collector.report()
+        trend_metrics = report.get('trend_metrics', {})
+
+        for name, trend_data in sorted(trend_metrics.items()):
+            daily_pattern = ', '.join([f"{day}: {count}" for day, count in trend_data.get('daily_mentions', {}).items()])
+            writer.writerow([
+                name,
+                trend_data.get('total_mentions', 0),
+                trend_data.get('first_mention', 'N/A'),
+                trend_data.get('last_mention', 'N/A'),
+                daily_pattern
+            ])
+
+        writer.writerow([])  # Empty row as separator
+
+        # SECTION 6: Keyword Relevance
+        writer.writerow(['=== KEYWORD RELEVANCE ==='])
+        writer.writerow(['Startup Name', 'Top Keywords', 'Keyword Count'])
+
+        keyword_metrics = report.get('keyword_metrics', {})
+
+        for name, keyword_data in sorted(keyword_metrics.items()):
+            top_keywords = ', '.join([f"{kw} ({score:.2f})" for kw, score in keyword_data.get('top_keywords', {}).items()])
+            writer.writerow([
+                name,
+                top_keywords,
+                keyword_data.get('keyword_count', 0)
+            ])
+
+        writer.writerow([])  # Empty row as separator
+
+        # Funding Information section has been removed
+
     report_files['metrics'] = metrics_file
+
+    # 3. Export a context report with raw text and paragraphs where startups were mentioned
+    context_file = f"output/reports/{base_filename}_context_{timestamp}.csv"
+
+    with open(context_file, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+
+        # Header row
+        writer.writerow(['Startup Name', 'Source URL', 'Context (Paragraph with Mention)', 'Top Keywords', 'Industry Trends'])
+
+        # Get report data
+        report = metrics_collector.report()
+        keyword_metrics = report.get('keyword_metrics', {})
+
+        # Write context data for each startup
+        for name in sorted(metrics_collector.final_startup_names):
+            # Get all URLs where this startup was mentioned
+            urls = set()
+            for url, startups in metrics_collector.startups_by_source.items():
+                if name in startups:
+                    urls.add(url)
+
+            # Get keyword information
+            keyword_info = "No keyword data available"
+            if name in keyword_metrics:
+                top_keywords = keyword_metrics[name].get('top_keywords', {})
+                if top_keywords:
+                    keyword_info = ', '.join([f"{kw} ({score:.2f})" for kw, score in top_keywords.items()])
+
+            # Funding information has been removed
+
+            # Get industry trends
+            industry_trends = "No trend data available"
+            if name in report.get('trend_metrics', {}):
+                trend_data = report['trend_metrics'][name]
+                industry_trends = f"Total mentions: {trend_data.get('total_mentions', 0)}, First mention: {trend_data.get('first_mention', 'N/A')}, Last mention: {trend_data.get('last_mention', 'N/A')}"
+
+            # For each URL, extract context
+            for url in sorted(urls):
+                contexts = metrics_collector.extract_context_for_startup(name, url)
+
+                if contexts:
+                    # Write each context as a separate row
+                    for context in contexts:
+                        writer.writerow([name, url, context, keyword_info, industry_trends])
+                else:
+                    # If no specific context found, note that
+                    writer.writerow([name, url, "No specific context found", keyword_info, industry_trends])
+
+    report_files['context'] = context_file
 
     print(f"\nGenerated consolidated reports:")
     print(f"1. Startup data: {startup_data_file}")
     print(f"2. Metrics report: {metrics_file}")
+    print(f"3. Context report: {context_file}")
 
     return report_files
 
@@ -173,20 +261,14 @@ def display_metrics_dashboard(metrics_collector: MetricsCollector):
 
     # Print URL metrics
     print("\nURL METRICS:")
-    print(f"Discovered: {report['url_metrics']['discovered']}")
     print(f"Processed: {report['url_metrics']['processed']} ({report['url_metrics']['success_rate']:.1f}%)")
-    print(f"Blocked by robots.txt: {report['url_metrics']['blocked_by_robots']}")
-    print(f"Skipped duplicates: {report['url_metrics']['skipped_duplicates']}")
     print(f"Failed: {report['url_metrics']['failed']}")
-    print(f"Cache hits: {report['url_metrics']['cache_hits']} ({report['url_metrics']['cache_hit_rate']:.1f}%)")
 
     # Print startup metrics
     print("\nSTARTUP METRICS:")
     print(f"Potential startups found: {report['startup_metrics']['potential_found']}")
-    print(f"After pattern extraction: {report['startup_metrics']['after_pattern_extraction']}")
     print(f"After LLM extraction: {report['startup_metrics']['after_llm_extraction']}")
     print(f"After validation: {report['startup_metrics']['after_validation']}")
-    print(f"Eliminated: {report['startup_metrics']['eliminated']}")
     print(f"Final unique startups: {report['startup_metrics']['final_unique']}")
     print(f"Conversion rate: {report['startup_metrics']['conversion_rate']:.1f}%")
 
@@ -212,5 +294,26 @@ def display_metrics_dashboard(metrics_collector: MetricsCollector):
     print("\nAPI METRICS:")
     print(f"Google API calls: {report['api_metrics']['google_api_calls']}")
     print(f"Gemini API calls: {report['api_metrics']['gemini_api_calls']}")
+
+    # Print trend metrics
+    print("\nTREND METRICS:")
+    trend_metrics = report.get('trend_metrics', {})
+    if trend_metrics:
+        for name, trend_data in sorted(trend_metrics.items())[:5]:  # Show top 5
+            print(f"{name}: {trend_data.get('total_mentions', 0)} mentions, first: {trend_data.get('first_mention', 'N/A')}, last: {trend_data.get('last_mention', 'N/A')}")
+    else:
+        print("No trend data available")
+
+    # Print keyword metrics
+    print("\nKEYWORD METRICS:")
+    keyword_metrics = report.get('keyword_metrics', {})
+    if keyword_metrics:
+        for name, keyword_data in sorted(keyword_metrics.items())[:5]:  # Show top 5
+            top_keywords = ', '.join([f"{kw} ({score:.2f})" for kw, score in keyword_data.get('top_keywords', {}).items()][:3])
+            print(f"{name}: {top_keywords}")
+    else:
+        print("No keyword data available")
+
+    # Funding metrics section has been removed
 
     print("\n" + "=" * 80)

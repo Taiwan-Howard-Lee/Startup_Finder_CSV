@@ -57,17 +57,20 @@ class QueryExpander:
 
     def expand_query(self, query: str, num_expansions: int = 10) -> List[str]:
         """
-        Expand a search query into multiple variations using Gemini 2.5 Pro.
+        Expand a search query into multiple variations using Gemini 2.5 Flash.
+
+        Uses Gemini 2.5 Flash for all query expansions.
+        The expansion focuses on semantic diversity to maximize unique search results.
 
         Args:
             query: The original search query.
-            num_expansions: Number of query variations to generate (1-100).
+            num_expansions: Number of query variations to generate. No upper limit.
 
         Returns:
             A list of expanded query strings, including the original.
         """
-        # Validate input range
-        num_expansions = max(1, min(100, num_expansions))
+        # Ensure num_expansions is at least 1
+        num_expansions = max(1, num_expansions)
 
         # Always include the original query
         expanded_queries = [query]
@@ -77,7 +80,7 @@ class QueryExpander:
             return expanded_queries
 
         try:
-            logger.info(f"Generating {num_expansions} query variations using Gemini 2.5 Pro...")
+            logger.info(f"Generating {num_expansions} semantically diverse query variations using Gemini 2.5 Flash...")
 
             # Get variations directly from the API client
             # The API client now uses the Pro model with a simplified prompt
@@ -91,8 +94,7 @@ class QueryExpander:
                 if expansion and expansion not in expanded_queries:
                     expanded_queries.append(expansion)
 
-            # Ensure we don't exceed the requested number
-            expanded_queries = expanded_queries[:num_expansions + 1]  # +1 for original
+            # No limit on the number of expansions
 
             logger.info(f"Generated {len(expanded_queries)-1} unique query variations")
 

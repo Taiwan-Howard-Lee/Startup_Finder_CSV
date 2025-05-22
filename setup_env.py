@@ -38,7 +38,7 @@ def test_gemini_api_key(api_key):
         genai.configure(api_key=api_key)
 
         # Try a simple model call with the flash model
-        model = genai.GenerativeModel('gemini-2.5-flash-preview-04-17')
+        model = genai.GenerativeModel('gemini-2.0-flash')
         response = model.generate_content("Hello, world!")
 
         # If we get here, the API key is valid
@@ -146,10 +146,25 @@ def setup_environment(test_apis=True):
             else:
                 print("❌ Gemini API key is invalid or has issues.")
 
-    # Check for Google Search API key
-    google_search_api_key = os.environ.get("GOOGLE_SEARCH_API_KEY")
-    if not google_search_api_key:
-        print("\nGoogle Search API key not found in environment variables.")
+    # Check for Google Search API keys (numbered format)
+    google_api_keys = []
+    i = 1
+    while True:
+        key = os.environ.get(f"GOOGLE_SEARCH_API_KEY_{i}")
+        if not key:
+            break
+        google_api_keys.append(key)
+        i += 1
+
+    # Check for legacy Google Search API key
+    legacy_key = os.environ.get("GOOGLE_SEARCH_API_KEY")
+    if legacy_key and legacy_key not in google_api_keys:
+        # Add legacy key to the list and also set it as the first numbered key
+        google_api_keys.append(legacy_key)
+        os.environ["GOOGLE_SEARCH_API_KEY_1"] = legacy_key
+
+    if not google_api_keys:
+        print("\nNo Google Search API keys found in environment variables.")
         print("You can get a Google Search API key from: https://developers.google.com/custom-search/v1/overview")
         print("\nInstructions to get a Google Search API key:")
         print("1. Go to https://developers.google.com/custom-search/v1/overview")
@@ -165,7 +180,24 @@ def setup_environment(test_apis=True):
             if google_search_api_key:
                 # Set the environment variable for this session
                 os.environ["GOOGLE_SEARCH_API_KEY"] = google_search_api_key
+                os.environ["GOOGLE_SEARCH_API_KEY_1"] = google_search_api_key
+                google_api_keys.append(google_search_api_key)
                 print("Google Search API key set for this session.")
+
+                # Ask if the user wants to add more API keys
+                add_more = input("\nWould you like to add another Google Search API key? (y/n): ").lower() == 'y'
+                key_index = 2
+
+                while add_more:
+                    additional_key = getpass.getpass(f"Enter additional Google Search API key #{key_index} (press Enter to skip): ")
+                    if additional_key:
+                        os.environ[f"GOOGLE_SEARCH_API_KEY_{key_index}"] = additional_key
+                        google_api_keys.append(additional_key)
+                        print(f"Additional Google Search API key #{key_index} set for this session.")
+                        key_index += 1
+                        add_more = input("\nWould you like to add another Google Search API key? (y/n): ").lower() == 'y'
+                    else:
+                        add_more = False
             else:
                 print("Google Search API key skipped.")
 
@@ -173,12 +205,27 @@ def setup_environment(test_apis=True):
             print("\nSetup cancelled.")
             return False
     else:
-        print("\nGoogle Search API key found in environment variables.")
+        print(f"\n{len(google_api_keys)} Google Search API key(s) found in environment variables.")
 
-    # Check for Google Custom Search Engine ID
-    google_cx_id = os.environ.get("GOOGLE_CX_ID")
-    if not google_cx_id:
-        print("\nGoogle Custom Search Engine ID not found in environment variables.")
+    # Check for Google Custom Search Engine IDs (numbered format)
+    google_cx_ids = []
+    i = 1
+    while True:
+        cx = os.environ.get(f"GOOGLE_CX_ID_{i}")
+        if not cx:
+            break
+        google_cx_ids.append(cx)
+        i += 1
+
+    # Check for legacy Google CX ID
+    legacy_cx = os.environ.get("GOOGLE_CX_ID")
+    if legacy_cx and legacy_cx not in google_cx_ids:
+        # Add legacy CX to the list and also set it as the first numbered CX
+        google_cx_ids.append(legacy_cx)
+        os.environ["GOOGLE_CX_ID_1"] = legacy_cx
+
+    if not google_cx_ids:
+        print("\nNo Google Custom Search Engine IDs found in environment variables.")
         print("You can create a Custom Search Engine at: https://programmablesearchengine.google.com/")
         print("\nInstructions to get a Custom Search Engine ID:")
         print("1. Go to https://programmablesearchengine.google.com/")
@@ -196,12 +243,29 @@ def setup_environment(test_apis=True):
             if google_cx_id:
                 # Set the environment variable for this session
                 os.environ["GOOGLE_CX_ID"] = google_cx_id
+                os.environ["GOOGLE_CX_ID_1"] = google_cx_id
+                google_cx_ids.append(google_cx_id)
                 print("Google Custom Search Engine ID set for this session.")
 
+                # Ask if the user wants to add more CX IDs
+                add_more = input("\nWould you like to add another Custom Search Engine ID? (y/n): ").lower() == 'y'
+                cx_index = 2
+
+                while add_more:
+                    additional_cx = input(f"Enter additional Custom Search Engine ID #{cx_index} (press Enter to skip): ")
+                    if additional_cx:
+                        os.environ[f"GOOGLE_CX_ID_{cx_index}"] = additional_cx
+                        google_cx_ids.append(additional_cx)
+                        print(f"Additional Custom Search Engine ID #{cx_index} set for this session.")
+                        cx_index += 1
+                        add_more = input("\nWould you like to add another Custom Search Engine ID? (y/n): ").lower() == 'y'
+                    else:
+                        add_more = False
+
                 # Test the Google Search API if both keys are available
-                if test_apis and google_search_api_key:
+                if test_apis and google_api_keys:
                     print("Testing Google Search API...")
-                    if test_google_search_api(google_search_api_key, google_cx_id):
+                    if test_google_search_api(google_api_keys[0], google_cx_ids[0]):
                         print("✅ Google Search API is working!")
                     else:
                         print("❌ Google Search API is not working. Check your API key and CX ID.")
@@ -212,21 +276,28 @@ def setup_environment(test_apis=True):
             print("\nSetup cancelled.")
             return False
     else:
-        print("\nGoogle Custom Search Engine ID found in environment variables.")
+        print(f"\n{len(google_cx_ids)} Google Custom Search Engine ID(s) found in environment variables.")
 
         # Test the Google Search API if both keys are available
-        if test_apis and google_search_api_key:
+        if test_apis and google_api_keys:
             print("Testing Google Search API...")
-            if test_google_search_api(google_search_api_key, google_cx_id):
+            if test_google_search_api(google_api_keys[0], google_cx_ids[0]):
                 print("✅ Google Search API is working!")
             else:
                 print("❌ Google Search API is not working. Check your API key and CX ID.")
 
     # Check if we have at least one API key
-    if not (gemini_api_key or (google_search_api_key and google_cx_id)):
+    if not (gemini_api_key or (google_api_keys and google_cx_ids)):
         print("\nWarning: No API keys provided. Some functionality may be limited.")
+    else:
+        print(f"\nEnvironment setup complete with:")
+        if gemini_api_key:
+            print(f"- 1 Gemini API key")
+        if google_api_keys:
+            print(f"- {len(google_api_keys)} Google Search API key(s)")
+        if google_cx_ids:
+            print(f"- {len(google_cx_ids)} Custom Search Engine ID(s)")
 
-    print("\nEnvironment setup complete.")
     return True
 
 
@@ -321,12 +392,53 @@ def save_api_keys_to_file(filename=".env"):
     """
     try:
         with open(filename, "w") as f:
+            # Save Gemini API key
             if os.environ.get("GEMINI_API_KEY"):
-                f.write(f"GEMINI_API_KEY={os.environ.get('GEMINI_API_KEY')}\n")
+                f.write(f"# Gemini API Keys\n")
+                f.write(f"GEMINI_API_KEY={os.environ.get('GEMINI_API_KEY')}\n\n")
+
+            # Save Google Search API keys (numbered format)
+            google_api_keys_found = False
+            i = 1
+            f.write(f"# Google Search API Keys (add more as needed)\n")
+            while True:
+                key = os.environ.get(f"GOOGLE_SEARCH_API_KEY_{i}")
+                if not key:
+                    break
+                f.write(f"GOOGLE_SEARCH_API_KEY_{i}={key}\n")
+                google_api_keys_found = True
+                i += 1
+
+            # Save legacy Google Search API key if it exists
             if os.environ.get("GOOGLE_SEARCH_API_KEY"):
                 f.write(f"GOOGLE_SEARCH_API_KEY={os.environ.get('GOOGLE_SEARCH_API_KEY')}\n")
+                google_api_keys_found = True
+
+            if not google_api_keys_found:
+                f.write(f"# GOOGLE_SEARCH_API_KEY_1=YOUR_API_KEY\n")
+
+            f.write("\n")
+
+            # Save Google Custom Search Engine IDs (numbered format)
+            google_cx_ids_found = False
+            i = 1
+            f.write(f"# Google Custom Search Engine IDs (add more as needed)\n")
+            while True:
+                cx = os.environ.get(f"GOOGLE_CX_ID_{i}")
+                if not cx:
+                    break
+                f.write(f"GOOGLE_CX_ID_{i}={cx}\n")
+                google_cx_ids_found = True
+                i += 1
+
+            # Save legacy Google CX ID if it exists
             if os.environ.get("GOOGLE_CX_ID"):
                 f.write(f"GOOGLE_CX_ID={os.environ.get('GOOGLE_CX_ID')}\n")
+                google_cx_ids_found = True
+
+            if not google_cx_ids_found:
+                f.write(f"# GOOGLE_CX_ID_1=YOUR_CX_ID\n")
+
         print(f"\nAPI keys saved to {filename}")
         print(f"In the future, you can load these keys with: source {filename}")
         return True
