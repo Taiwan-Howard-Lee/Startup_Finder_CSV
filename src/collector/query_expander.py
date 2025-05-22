@@ -64,42 +64,33 @@ class QueryExpander:
 
         Args:
             query: The original search query.
-            num_expansions: Number of query variations to generate. No upper limit.
+            num_expansions: Number of NEW query variations to generate (in addition to original).
 
         Returns:
             A list of expanded query strings, including the original.
+            Total length will be num_expansions + 1 (original + new variations).
         """
-        # Ensure num_expansions is at least 1
-        num_expansions = max(1, num_expansions)
+        # Ensure num_expansions is at least 0
+        num_expansions = max(0, num_expansions)
 
-        # Always include the original query
-        expanded_queries = [query]
-
-        # If only 1 expansion requested, just return the original query
-        if num_expansions <= 1:
-            return expanded_queries
+        # If no expansions requested, just return the original query
+        if num_expansions <= 0:
+            return [query]
 
         try:
-            logger.info(f"Generating {num_expansions} semantically diverse query variations using Gemini 2.5 Flash...")
+            logger.info(f"Generating {num_expansions} NEW semantically diverse query variations using Gemini 2.5 Flash...")
 
             # Get variations directly from the API client
-            # The API client now uses the Pro model with a simplified prompt
-            ai_expansions = self.api_client.expand_query(
+            # The API client now returns original + new variations
+            expanded_queries = self.api_client.expand_query(
                 query=query,
                 num_expansions=num_expansions
             )
 
-            # Add unique expansions
-            for expansion in ai_expansions:
-                if expansion and expansion not in expanded_queries:
-                    expanded_queries.append(expansion)
-
-            # No limit on the number of expansions
-
-            logger.info(f"Generated {len(expanded_queries)-1} unique query variations")
+            logger.info(f"Generated {len(expanded_queries)-1} unique query variations (requested {num_expansions})")
+            return expanded_queries
 
         except Exception as e:
             # Log the error but continue with just the original query
             logger.error(f"Error expanding query: {e}")
-
-        return expanded_queries
+            return [query]

@@ -1427,12 +1427,10 @@ def find_startups(query, max_results=10, num_expansions=5, output_file=None, use
             gemini_client = GeminiAPIClient()
             query_expander = QueryExpander(api_client=gemini_client)
 
-            # Expand the query using parallel processing - use fewer expansions to reduce API calls
+            # Expand the query using parallel processing
             print("\nExpanding search query using parallel processing...")
             start_time = time.time()
-            # Limit the number of expansions to reduce API calls
-            actual_num_expansions = min(num_expansions, 5)  # Cap at 5 expansions to reduce API calls
-            expanded_queries = query_expander.expand_query_parallel(query, num_expansions=actual_num_expansions)
+            expanded_queries = query_expander.expand_query_parallel(query, num_expansions=num_expansions)
             end_time = time.time()
 
             print(f"\nExpanded queries (generated in {end_time - start_time:.2f} seconds):")

@@ -264,10 +264,11 @@ class GeminiAPIClient:
 
         Args:
             query: The original search query.
-            num_expansions: Number of query variations to generate. No upper limit.
+            num_expansions: Number of NEW query variations to generate (in addition to original).
 
         Returns:
-            A list of expanded query strings.
+            A list of expanded query strings, including the original query.
+            Total length will be num_expansions + 1 (original + new variations).
 
         Raises:
             Exception: If there's an error communicating with the Gemini API.
@@ -276,12 +277,16 @@ class GeminiAPIClient:
         if not query or not query.strip():
             return [query]
 
+        # If no expansions requested, just return the original
+        if num_expansions <= 0:
+            return [query]
+
         # Create an enhanced prompt for Gemini 2.5 Flash with diversity optimization
         prompt = f"""
         You are a startup intelligence researcher specializing in query expansion for Google search.
 
         TASK:
-        Generate {num_expansions} different search query variations for finding startups related to: "{query}"
+        Generate exactly {num_expansions} different search query variations for finding startups related to: "{query}"
 
         GUIDELINES:
         - Maximize DIVERSITY in the search vector space - each query should target a different aspect or dimension
@@ -295,11 +300,20 @@ class GeminiAPIClient:
           * Funding status (bootstrapped, seed, venture-backed)
         - Use industry-specific terminology where appropriate
         - Include both specific and general variations, but ensure they target different result sets
+        - Each query should be 2-8 words long and search-engine optimized
         - Prioritize queries that would yield unique startups not found by other queries
 
+        EXAMPLES of good query variations for "AI startups":
+        - "artificial intelligence companies"
+        - "machine learning ventures"
+        - "AI tech entrepreneurs"
+        - "deep learning businesses"
+        - "neural network startups"
+
         FORMAT:
-        Return ONLY the list of expanded queries, one per line, without numbering or any other text.
-        Do not include the original query in your response.
+        Return EXACTLY {num_expansions} queries, one per line, without numbering or any other text.
+        Do not include the original query "{query}" in your response.
+        Each line should contain only one search query.
         """
 
         try:
@@ -308,24 +322,62 @@ class GeminiAPIClient:
             response = self.pro_model.generate_content(prompt)
             logger.info("Successfully used Gemini 2.5 Flash for query expansion")
 
-            # Process the response
-            expanded_queries = [query]  # Always include the original query
+            # Always start with the original query
+            expanded_queries = [query]
 
             if response.text:
-                # Simply split by newlines and clean up
+                # Split by newlines and clean up
                 new_queries = [line.strip() for line in response.text.strip().split('\n') if line.strip()]
 
-                # Add unique expansions
+                # Remove any numbering or bullet points that might have been added
+                cleaned_queries = []
                 for new_query in new_queries:
-                    if new_query and new_query not in expanded_queries:
+                    # Remove common prefixes like "1.", "- ", etc.
+                    cleaned_query = new_query
+                    if '. ' in cleaned_query and cleaned_query.split('. ', 1)[0].isdigit():
+                        cleaned_query = cleaned_query.split('. ', 1)[1]
+                    elif cleaned_query.startswith('- '):
+                        cleaned_query = cleaned_query[2:]
+                    elif cleaned_query.startswith('* '):
+                        cleaned_query = cleaned_query[2:]
+
+                    cleaned_query = cleaned_query.strip()
+                    if cleaned_query and cleaned_query.lower() != query.lower():
+                        cleaned_queries.append(cleaned_query)
+
+                # Add unique expansions up to the requested number
+                for new_query in cleaned_queries:
+                    if len(expanded_queries) >= num_expansions + 1:  # +1 for original query
+                        break
+                    if new_query not in expanded_queries:
                         expanded_queries.append(new_query)
 
-            # If we have too few, duplicate the original query to fill
-            while len(expanded_queries) < num_expansions + 1:
-                expanded_queries.append(query)
+            # If we didn't get enough variations, try to generate more with a simpler approach
+            if len(expanded_queries) < num_expansions + 1:
+                missing_count = (num_expansions + 1) - len(expanded_queries)
+                logger.warning(f"Only got {len(expanded_queries)-1} variations, need {missing_count} more")
 
-            # Return all expansions up to the requested number
-            return expanded_queries[:num_expansions]
+                # Try a simpler fallback prompt
+                fallback_prompt = f"""
+                Generate {missing_count} more search variations for: "{query}"
+                Make them different from these existing ones: {', '.join(expanded_queries[1:])}
+                Return only the new queries, one per line.
+                """
+
+                try:
+                    fallback_response = self.pro_model.generate_content(fallback_prompt)
+                    if fallback_response.text:
+                        fallback_queries = [line.strip() for line in fallback_response.text.strip().split('\n') if line.strip()]
+                        for fallback_query in fallback_queries:
+                            if len(expanded_queries) >= num_expansions + 1:
+                                break
+                            if fallback_query and fallback_query not in expanded_queries:
+                                expanded_queries.append(fallback_query)
+                except Exception as fallback_error:
+                    logger.warning(f"Fallback query generation failed: {fallback_error}")
+
+            logger.info(f"Generated {len(expanded_queries)-1} unique query variations (requested {num_expansions})")
+            return expanded_queries
 
         except Exception as e:
             logger.error(f"Error expanding query with Gemini API: {e}")
